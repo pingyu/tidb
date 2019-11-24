@@ -159,6 +159,11 @@ func (it *Iterator4Chunk) GetChunk() *Chunk {
 	return it.chk
 }
 
+// Cursor returns the chunk stored in the Iterator4Chunk
+func (it *Iterator4Chunk) Cursor() int32 {
+	return it.cursor - 1
+}
+
 // NewIterator4List returns a Iterator for List.
 func NewIterator4List(li *List) Iterator {
 	return &iterator4List{li: li}

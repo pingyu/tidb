@@ -35,10 +35,11 @@ import (
 // InsertExec represents an insert executor.
 type InsertExec struct {
 	*InsertValues
-	OnDuplicate    []*expression.Assignment
-	evalBuffer4Dup chunk.MutRow
-	curInsertVals  chunk.MutRow
-	row4Update     []types.Datum
+	OnDuplicate     []*expression.Assignment
+	evalBufferTypes []*types.FieldType
+	evalBuffer4Dup  chunk.MutRow
+	curInsertVals   chunk.MutRow
+	row4Update      []types.Datum
 
 	Priority mysql.PriorityEnum
 }
@@ -185,6 +186,10 @@ func (e *InsertExec) batchUpdateDupRows(ctx context.Context, newRows [][]types.D
 		return err
 	}
 
+	if e.ctx.GetSessionVars().EnableVectorizedExpression {
+		return e.batchVecUpdateDupRows(ctx, txn, newRows, toBeCheckedRows)
+	}
+
 	for i, r := range toBeCheckedRows {
 		if r.handleKey != nil {
 			handle, err := tablecodec.DecodeRowKey(r.handleKey.newKV.key)
@@ -284,21 +289,21 @@ func (e *InsertExec) initEvalBuffer4Dup() {
 	// Use writable columns for old row for update.
 	numWritableCols := len(e.Table.WritableCols())
 
-	evalBufferTypes := make([]*types.FieldType, 0, numCols+numWritableCols)
+	e.evalBufferTypes = make([]*types.FieldType, 0, numCols+numWritableCols)
 
 	// Append the old row before the new row, to be consistent with "Schema4OnDuplicate" in the "Insert" PhysicalPlan.
 	for _, col := range e.Table.WritableCols() {
-		evalBufferTypes = append(evalBufferTypes, &col.FieldType)
+		e.evalBufferTypes = append(e.evalBufferTypes, &col.FieldType)
 	}
 	for _, col := range e.Table.Cols() {
-		evalBufferTypes = append(evalBufferTypes, &col.FieldType)
+		e.evalBufferTypes = append(e.evalBufferTypes, &col.FieldType)
 	}
 	if e.hasExtraHandle {
-		evalBufferTypes = append(evalBufferTypes, types.NewFieldType(mysql.TypeLonglong))
+		e.evalBufferTypes = append(e.evalBufferTypes, types.NewFieldType(mysql.TypeLonglong))
 	}
-	e.evalBuffer4Dup = chunk.MutRowFromTypes(evalBufferTypes)
-	e.curInsertVals = chunk.MutRowFromTypes(evalBufferTypes[numWritableCols:])
-	e.row4Update = make([]types.Datum, 0, len(evalBufferTypes))
+	e.evalBuffer4Dup = chunk.MutRowFromTypes(e.evalBufferTypes)
+	e.curInsertVals = chunk.MutRowFromTypes(e.evalBufferTypes[numWritableCols:])
+	e.row4Update = make([]types.Datum, 0, len(e.evalBufferTypes))
 }
 
 // doDupRowUpdate updates the duplicate row.
