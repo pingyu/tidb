@@ -68,6 +68,9 @@ func newVecUpdateDupChunk(numColumns int, ftypes []*types.FieldType, size int, m
 // batchVecUpdateDupRows updates multi-rows in batch if they are duplicate with rows in table
 // in a vectorized manner.
 func (e *InsertExec) batchVecUpdateDupRows(ctx context.Context, txn kv.Transaction, newRows [][]types.Datum, toBeCheckedRows []toBeCheckedRow) error {
+	// DEBUG //
+	//e.ctx.GetSessionVars().StmtCtx.DupKeyAsWarning = true
+
 	chk := newVecUpdateDupChunk(len(e.Table.WritableCols()), e.evalBufferTypes, len(toBeCheckedRows), e.base().maxChunkSize)
 
 	for i, r := range toBeCheckedRows {
@@ -121,9 +124,20 @@ func (e *InsertExec) batchVecUpdateDupRows(ctx context.Context, txn kv.Transacti
 		// and key-values should be filled back to dupOldRowValues for the further row check,
 		// due to there may be duplicate keys inside the insert statement.
 		if newRows[i] != nil {
+			if !chk.IsEmpty() {
+				if err := e.doVecDupRowUpdateOneChunk(ctx, e.OnDuplicate, chk); err != nil {
+					return err
+				}
+				chk.Reset()
+			}
+
 			_, err := e.addRecord(ctx, newRows[i])
 			if err != nil {
-				return err
+				if e.ctx.GetSessionVars().StmtCtx.DupKeyAsWarning && kv.ErrKeyExists.Equal(err) {
+					e.ctx.GetSessionVars().StmtCtx.AppendWarning(err)
+				} else {
+					return err
+				}
 			}
 		}
 	}
@@ -144,12 +158,7 @@ func (e *InsertExec) vecUpdateDupRow(ctx context.Context, txn kv.Transaction, ro
 		return err
 	}
 
-	err = e.doVecDupRowUpdate(ctx, handle, oldRow, row.row, e.OnDuplicate, chk)
-	if e.ctx.GetSessionVars().StmtCtx.DupKeyAsWarning && kv.ErrKeyExists.Equal(err) {
-		e.ctx.GetSessionVars().StmtCtx.AppendWarning(err)
-		return nil
-	}
-	return err
+	return e.doVecDupRowUpdate(ctx, handle, oldRow, row.row, e.OnDuplicate, chk)
 }
 
 // doVecDupRowUpdate updates the duplicate row in a vectorized manner
@@ -213,7 +222,11 @@ func (e *InsertExec) doVecDupRowUpdateOneChunk(ctx context.Context, cols []*expr
 		newData := e.row4Update[:len(oldRow)]
 		_, _, _, err := updateRecord(ctx, e.ctx, handle, oldRow, newData, assignFlag, e.Table, true)
 		if err != nil {
-			return err
+			if e.ctx.GetSessionVars().StmtCtx.DupKeyAsWarning && kv.ErrKeyExists.Equal(err) {
+				e.ctx.GetSessionVars().StmtCtx.AppendWarning(err)
+			} else {
+				return err
+			}
 		}
 	}
 	return nil
