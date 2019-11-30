@@ -69,7 +69,7 @@ func newVecUpdateDupChunk(numColumns int, ftypes []*types.FieldType, size int, m
 // in a vectorized manner.
 func (e *InsertExec) batchVecUpdateDupRows(ctx context.Context, txn kv.Transaction, newRows [][]types.Datum, toBeCheckedRows []toBeCheckedRow) error {
 	// DEBUG //
-	//e.ctx.GetSessionVars().StmtCtx.DupKeyAsWarning = true
+	e.ctx.GetSessionVars().StmtCtx.DupKeyAsWarning = true
 
 	chk := newVecUpdateDupChunk(len(e.Table.WritableCols()), e.evalBufferTypes, len(toBeCheckedRows), e.base().maxChunkSize)
 

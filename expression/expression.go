@@ -698,3 +698,35 @@ func wrapWithIsTrue(ctx sessionctx.Context, keepNull bool, arg Expression) (Expr
 	}
 	return FoldConstant(sf), nil
 }
+
+// IsUpdateDupCanVectorized ...
+func IsUpdateDupCanVectorized(cols []*Assignment) bool {
+	var fn func(expr Expression) bool
+	fn = func(expr Expression) bool {
+		if _, ok := expr.(*Column); ok {
+			return false
+		} else if e, ok := expr.(*ScalarFunction); ok {
+			switch b := e.Function.(type) {
+			case *builtinValuesIntSig:
+				return true
+			case *builtinValuesRealSig:
+				return true
+			default:
+				for _, arg := range b.getArgs() {
+					if !fn(arg) {
+						return false
+					}
+				}
+				return true
+			}
+		}
+		return true
+	}
+
+	for _, assign := range cols {
+		if !fn(assign.Expr) {
+			return false
+		}
+	}
+	return true
+}

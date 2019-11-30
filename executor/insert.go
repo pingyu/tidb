@@ -186,7 +186,7 @@ func (e *InsertExec) batchUpdateDupRows(ctx context.Context, newRows [][]types.D
 		return err
 	}
 
-	if e.ctx.GetSessionVars().EnableVectorizedExpression {
+	if e.ctx.GetSessionVars().EnableVectorizedExpression && expression.IsUpdateDupCanVectorized(e.OnDuplicate) {
 		return e.batchVecUpdateDupRows(ctx, txn, newRows, toBeCheckedRows)
 	}
 
