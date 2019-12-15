@@ -29,6 +29,7 @@ import (
 // WindowExec is the executor for window functions.
 type WindowExec struct {
 	baseExecutor
+	windowParallelExec
 
 	groupChecker *vecGroupChecker
 	// childResult stores the child chunk
@@ -42,18 +43,52 @@ type WindowExec struct {
 
 	numWindowFuncs int
 	processor      windowProcessor
+
+	groupingConcurrency int
+}
+
+// Open implements the Executor Open interface.
+func (e *WindowExec) Open(ctx context.Context) error {
+	if err := e.baseExecutor.Open(ctx); err != nil {
+		return err
+	}
+
+	sessionVars := e.ctx.GetSessionVars()
+	e.groupingConcurrency = sessionVars.WindowGroupingConcurrency
+
+	if e.isParallelExec() {
+		e.initForParallelExec()
+		return nil
+	}
+	return nil
 }
 
 // Close implements the Executor Close interface.
 func (e *WindowExec) Close() error {
+	if e.isParallelExec() {
+		e.deinitForParallelExec()
+	}
 	return errors.Trace(e.baseExecutor.Close())
 }
 
 // Next implements the Executor Next interface.
 func (e *WindowExec) Next(ctx context.Context, chk *chunk.Chunk) error {
 	chk.Reset()
+
+	if e.isParallelExec() {
+		return e.parallelExec(ctx, chk)
+	}
+
 	for !e.executed && !e.preparedChunkAvailable() {
-		err := e.consumeOneGroup(ctx)
+		groupRows, eof, err := e.fetchOneGroup(ctx)
+		if err != nil {
+			e.executed = true
+			return err
+		}
+		if eof {
+			e.executed = true
+		}
+		err = e.consumeGroupRows(groupRows)
 		if err != nil {
 			e.executed = true
 			return err
@@ -72,20 +107,19 @@ func (e *WindowExec) preparedChunkAvailable() bool {
 	return len(e.resultChunks) > 0 && e.remainingRowsInChunk[0] == 0
 }
 
-func (e *WindowExec) consumeOneGroup(ctx context.Context) error {
+func (e *WindowExec) fetchOneGroup(ctx context.Context) ([]chunk.Row, bool, error) {
 	var groupRows []chunk.Row
 	if e.groupChecker.isExhausted() {
 		eof, err := e.fetchChild(ctx)
 		if err != nil {
-			return errors.Trace(err)
+			return nil, false, errors.Trace(err)
 		}
 		if eof {
-			e.executed = true
-			return e.consumeGroupRows(groupRows)
+			return groupRows, true, nil
 		}
 		_, err = e.groupChecker.splitIntoGroups(e.childResult)
 		if err != nil {
-			return errors.Trace(err)
+			return nil, false, errors.Trace(err)
 		}
 	}
 	begin, end := e.groupChecker.getNextGroup()
@@ -97,16 +131,15 @@ func (e *WindowExec) consumeOneGroup(ctx context.Context) error {
 		meetLastGroup = false
 		eof, err := e.fetchChild(ctx)
 		if err != nil {
-			return errors.Trace(err)
+			return nil, false, errors.Trace(err)
 		}
 		if eof {
-			e.executed = true
-			return e.consumeGroupRows(groupRows)
+			return groupRows, true, nil
 		}
 
 		isFirstGroupSameAsPrev, err := e.groupChecker.splitIntoGroups(e.childResult)
 		if err != nil {
-			return errors.Trace(err)
+			return nil, false, errors.Trace(err)
 		}
 
 		if isFirstGroupSameAsPrev {
@@ -117,7 +150,7 @@ func (e *WindowExec) consumeOneGroup(ctx context.Context) error {
 			meetLastGroup = end == e.childResult.NumRows()
 		}
 	}
-	return e.consumeGroupRows(groupRows)
+	return groupRows, false, nil
 }
 
 func (e *WindowExec) consumeGroupRows(groupRows []chunk.Row) (err error) {
@@ -193,11 +226,24 @@ type windowProcessor interface {
 	appendResult2Chunk(ctx sessionctx.Context, rows []chunk.Row, chk *chunk.Chunk, remained int) ([]chunk.Row, error)
 	// resetPartialResult resets the partial result to the original state for a specific window function.
 	resetPartialResult()
+	// cloneWithNewPartialResult clone a new windowProcessor with newly allocated PartialResult
+	cloneWithNewPartialResult() windowProcessor
 }
 
 type aggWindowProcessor struct {
 	windowFuncs    []aggfuncs.AggFunc
 	partialResults []aggfuncs.PartialResult
+}
+
+func (p *aggWindowProcessor) cloneWithNewPartialResult() windowProcessor {
+	partialResults := make([]aggfuncs.PartialResult, 0, len(p.windowFuncs))
+	for _, agg := range p.windowFuncs {
+		partialResults = append(partialResults, agg.AllocPartialResult())
+	}
+	return &aggWindowProcessor{
+		windowFuncs:    p.windowFuncs,
+		partialResults: partialResults,
+	}
 }
 
 func (p *aggWindowProcessor) consumeGroupRows(ctx sessionctx.Context, rows []chunk.Row) ([]chunk.Row, error) {
@@ -237,6 +283,20 @@ type rowFrameWindowProcessor struct {
 	start          *core.FrameBound
 	end            *core.FrameBound
 	curRowIdx      uint64
+}
+
+func (p *rowFrameWindowProcessor) cloneWithNewPartialResult() windowProcessor {
+	partialResults := make([]aggfuncs.PartialResult, 0, len(p.windowFuncs))
+	for _, agg := range p.windowFuncs {
+		partialResults = append(partialResults, agg.AllocPartialResult())
+	}
+	return &rowFrameWindowProcessor{
+		windowFuncs:    p.windowFuncs,
+		partialResults: partialResults,
+		start:          p.start,
+		end:            p.end,
+		curRowIdx:      p.curRowIdx,
+	}
 }
 
 func (p *rowFrameWindowProcessor) getStartOffset(numRows uint64) uint64 {
@@ -336,6 +396,24 @@ type rangeFrameWindowProcessor struct {
 	orderByCols     []*expression.Column
 	// expectedCmpResult is used to decide if one value is included in the frame.
 	expectedCmpResult int64
+}
+
+func (p *rangeFrameWindowProcessor) cloneWithNewPartialResult() windowProcessor {
+	partialResults := make([]aggfuncs.PartialResult, 0, len(p.windowFuncs))
+	for _, agg := range p.windowFuncs {
+		partialResults = append(partialResults, agg.AllocPartialResult())
+	}
+	return &rangeFrameWindowProcessor{
+		windowFuncs:       p.windowFuncs,
+		partialResults:    partialResults,
+		start:             p.start,
+		end:               p.end,
+		curRowIdx:         p.curRowIdx,
+		lastStartOffset:   p.lastStartOffset,
+		lastEndOffset:     p.lastEndOffset,
+		orderByCols:       p.orderByCols,
+		expectedCmpResult: p.expectedCmpResult,
+	}
 }
 
 func (p *rangeFrameWindowProcessor) getStartOffset(ctx sessionctx.Context, rows []chunk.Row) (uint64, error) {
