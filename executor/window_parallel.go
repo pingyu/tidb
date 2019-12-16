@@ -346,7 +346,7 @@ func (w *windowGroupingWorker) copyOtherFields(rows []chunk.Row, result *chunk.C
 	columns := w.e.Schema().Columns[:len(w.e.Schema().Columns)-w.e.numWindowFuncs]
 	for i, col := range columns {
 		for k := 0; k < remained; k++ {
-			//TODO: LOW efficency here
+			//TODO: LOW efficiency here
 			d := rows[k].GetDatum(col.Index, col.RetType)
 			result.AppendDatum(i, &d)
 		}
