@@ -34,21 +34,21 @@ import (
 //                                   ^
 //                                   |
 //                                   +
-//                              +-+-            +-+
-//                              | |    ......   | |  groupingOutputCh
-//                              +++-            +-+
-//                               ^
-//                               |
-//                               +---------------+
+//                                  +++
+//                                  | |  groupingOutputCh (1 x Concurrency)
+//                                  +++
+//                                   ^
+//                                   |
+//                               +---+-----------+
 //                               |               |
 //                 +--------------+             +--------------+
-//                 | group worker |     ......  | group worker |  group worker: running `WindowExec.consumeGroupRows`
+//                 | group worker |     ......  | group worker |  group worker (x Concurrency): Consuming GroupRows
 //                 +------------+-+             +-+------------+
 //                              ^                 ^
 //                              |                 |
 //                             +-+  +-+  ......  +-+
 //                             | |  | |          | |
-//                             ...  ...          ...    groupingInputCh
+//                             ...  ...          ...    groupingInputChs (Concurrency x 1)
 //                             | |  | |          | |
 //                             +++  +++          +++
 //                              ^    ^            ^
@@ -63,7 +63,7 @@ import (
 //                                        |
 //                        +---------------v-----------------+
 //           inputCh ---> |  data fetcher (of SORTED input) |
-//                        +---------------------------------+
+//     (1 x Concurrency)  +---------------------------------+
 //
 ////////////////////////////////////////////////////////////////////////////////////////
 
@@ -97,7 +97,6 @@ type windowGroupingOutput struct {
 
 type windowGroupingWorker struct {
 	ctx       sessionctx.Context
-	exec      *WindowExec
 	processor windowProcessor
 	finishCh  <-chan struct{}
 
@@ -139,7 +138,6 @@ func (e *WindowExec) initForParallelExec() {
 		}
 		w := windowGroupingWorker{
 			ctx:                  e.ctx,
-			exec:                 e,
 			processor:            processor,
 			finishCh:             e.finishCh,
 			inputCh:              e.groupingInputChs[i],
@@ -158,12 +156,12 @@ func (e *WindowExec) initForParallelExec() {
 }
 
 func (e *WindowExec) deinitForParallelExec() {
-	if !e.prepared { //TODO: why ?
-		close(e.inputCh)
-		for _, ch := range e.groupingInputChs {
+	if !e.prepared {
+		close(e.inputCh)                        // TODO: why ?
+		for _, ch := range e.groupingInputChs { // DONE by execDataFetcher.defer if prepared
 			close(ch)
 		}
-		close(e.groupingOutputCh)
+		close(e.groupingOutputCh) // DONE by waitWorkerAndCloseOutput if prepared
 	}
 	close(e.finishCh)
 	for _, ch := range e.groupingInputChs {
@@ -354,6 +352,7 @@ func (w *windowGroupingWorker) getInput() ([]chunk.Row, bool) {
 			return nil, false
 		}
 		groupRows := groupData.groupRows
+		groupData.groupRows = nil
 		w.giveBackCh <- &windowParallelInput{
 			groupData:  groupData,
 			giveBackCh: w.inputCh,
