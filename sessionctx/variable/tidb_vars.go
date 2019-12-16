@@ -263,6 +263,10 @@ const (
 	// The hash agg executor starts multiple concurrent final workers to do final aggregate works.
 	TiDBHashAggFinalConcurrency = "tidb_hashagg_final_concurrency"
 
+	// tidb_window_grouping_concurrency is used for window executor.
+	// The window executor starts multiple concurrent workers to do grouping (or called "partitioning") works.
+	TiDBWindowGroupingConcurrency = "tidb_window_grouping_concurrency"
+
 	// tidb_backoff_lock_fast is used for tikv backoff base time in milliseconds.
 	TiDBBackoffLockFast = "tidb_backoff_lock_fast"
 

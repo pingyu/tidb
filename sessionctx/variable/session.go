@@ -896,6 +896,8 @@ func (s *SessionVars) SetSystemVar(name string, val string) error {
 		s.HashAggPartialConcurrency = tidbOptPositiveInt32(val, DefTiDBHashAggPartialConcurrency)
 	case TiDBHashAggFinalConcurrency:
 		s.HashAggFinalConcurrency = tidbOptPositiveInt32(val, DefTiDBHashAggFinalConcurrency)
+	case TiDBWindowGroupingConcurrency:
+		s.WindowGroupingConcurrency = tidbOptPositiveInt32(val, DefTiDBWindowGroupingConcurrency)
 	case TiDBDistSQLScanConcurrency:
 		s.DistSQLScanConcurrency = tidbOptPositiveInt32(val, DefDistSQLScanConcurrency)
 	case TiDBIndexSerialScanConcurrency:
