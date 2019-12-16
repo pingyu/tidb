@@ -97,6 +97,7 @@ type windowGroupingOutput struct {
 
 type windowGroupingWorker struct {
 	ctx       sessionctx.Context
+	e         *WindowExec
 	processor windowProcessor
 	finishCh  <-chan struct{}
 
@@ -138,6 +139,7 @@ func (e *WindowExec) initForParallelExec() {
 		}
 		w := windowGroupingWorker{
 			ctx:                  e.ctx,
+			e:                    e,
 			processor:            processor,
 			finishCh:             e.finishCh,
 			inputCh:              e.groupingInputChs[i],
@@ -214,10 +216,12 @@ func (e *WindowExec) execDataFetcher(ctx context.Context) {
 			e.groupingOutputCh <- &windowGroupingOutput{err: err}
 			return
 		}
-		if eof {
+		if groupData.groupRows != nil {
+			input.giveBackCh <- groupData
+		}
+		if eof || groupData.groupRows == nil {
 			return
 		}
-		input.giveBackCh <- groupData
 	}
 }
 
@@ -307,6 +311,7 @@ func (w *windowGroupingWorker) consumeGroupRows(groupRows []chunk.Row) (err erro
 	if remainingRowsInGroup == 0 {
 		return nil
 	}
+	rowsForCopy := groupRows
 	for remainingRowsInGroup > 0 {
 		remained := mathutil.Min(w.remainingRowsInResult, remainingRowsInGroup)
 		w.remainingRowsInResult -= remained
@@ -320,6 +325,9 @@ func (w *windowGroupingWorker) consumeGroupRows(groupRows []chunk.Row) (err erro
 		if err != nil {
 			return errors.Trace(err)
 		}
+
+		rowsForCopy = w.copyOtherFields(rowsForCopy, w.result, remained)
+
 		if w.result.IsFull() {
 			w.outputCh <- &windowGroupingOutput{chk: w.result, giveBackCh: w.outputResultHolderCh}
 			var finished bool
@@ -332,6 +340,18 @@ func (w *windowGroupingWorker) consumeGroupRows(groupRows []chunk.Row) (err erro
 	}
 	w.processor.resetPartialResult()
 	return nil
+}
+
+func (w *windowGroupingWorker) copyOtherFields(rows []chunk.Row, result *chunk.Chunk, remained int) []chunk.Row {
+	columns := w.e.Schema().Columns[:len(w.e.Schema().Columns)-w.e.numWindowFuncs]
+	for i, col := range columns {
+		for k := 0; k < remained; k++ {
+			//TODO: LOW efficency here
+			d := rows[k].GetDatum(col.Index, col.RetType)
+			result.AppendDatum(i, &d)
+		}
+	}
+	return rows[remained:]
 }
 
 func (w *windowGroupingWorker) receiveOutputResultHolder() (*chunk.Chunk, bool) {
