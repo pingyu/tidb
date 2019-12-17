@@ -415,10 +415,11 @@ func buildWindowExecutor(ctx sessionctx.Context, windowFunc string, src Executor
 
 type windowTestCase struct {
 	// The test table's schema is fixed (col Double, partitionBy LongLong, rawData VarString(5128), col LongLong).
-	windowFunc string
-	ndv        int // the number of distinct group-by keys
-	rows       int
-	ctx        sessionctx.Context
+	windowFunc  string
+	ndv         int // the number of distinct group-by keys
+	rows        int
+	concurrency int
+	ctx         sessionctx.Context
 }
 
 var rawData = strings.Repeat("x", 5*1024)
@@ -435,18 +436,23 @@ func (a windowTestCase) columns() []*expression.Column {
 }
 
 func (a windowTestCase) String() string {
-	return fmt.Sprintf("(func:%v, ndv:%v, rows:%v)",
-		a.windowFunc, a.ndv, a.rows)
+	return fmt.Sprintf("(func:%v, ndv:%v, rows:%v, concurrency:%v)",
+		a.windowFunc, a.ndv, a.rows, a.concurrency)
 }
 
 func defaultWindowTestCase() *windowTestCase {
 	ctx := mock.NewContext()
 	ctx.GetSessionVars().InitChunkSize = variable.DefInitChunkSize
 	ctx.GetSessionVars().MaxChunkSize = variable.DefMaxChunkSize
-	return &windowTestCase{ast.WindowFuncRowNumber, 1000, 10000000, ctx}
+	return &windowTestCase{ast.WindowFuncRowNumber, 1000, 10000000, 1, ctx}
 }
 
 func benchmarkWindowExecWithCase(b *testing.B, casTest *windowTestCase) {
+	ctx := casTest.ctx
+	if err := ctx.GetSessionVars().SetSystemVar(variable.TiDBWindowGroupingConcurrency, fmt.Sprintf("%v", casTest.concurrency)); err != nil {
+		b.Fatal(err)
+	}
+
 	cols := casTest.columns()
 	dataSource := buildMockDataSource(mockDataSourceParameters{
 		schema: expression.NewSchema(cols...),
@@ -490,15 +496,19 @@ func BenchmarkWindowRows(b *testing.B) {
 	b.ReportAllocs()
 	rows := []int{1000, 100000}
 	ndvs := []int{10, 1000}
-	for _, row := range rows {
-		for _, ndv := range ndvs {
-			cas := defaultWindowTestCase()
-			cas.rows = row
-			cas.ndv = ndv
-			cas.windowFunc = ast.WindowFuncRowNumber // cheapest
-			b.Run(fmt.Sprintf("%v", cas), func(b *testing.B) {
-				benchmarkWindowExecWithCase(b, cas)
-			})
+	concs := []int{1, 4}
+	for _, con := range concs {
+		for _, row := range rows {
+			for _, ndv := range ndvs {
+				cas := defaultWindowTestCase()
+				cas.rows = row
+				cas.ndv = ndv
+				cas.concurrency = con
+				cas.windowFunc = ast.WindowFuncRowNumber // cheapest
+				b.Run(fmt.Sprintf("%v", cas), func(b *testing.B) {
+					benchmarkWindowExecWithCase(b, cas)
+				})
+			}
 		}
 	}
 }
@@ -518,14 +528,18 @@ func BenchmarkWindowFunctions(b *testing.B) {
 		ast.WindowFuncLastValue,
 		ast.WindowFuncNthValue,
 	}
-	for _, windowFunc := range windowFuncs {
-		cas := defaultWindowTestCase()
-		cas.rows = 100000
-		cas.ndv = 1000
-		cas.windowFunc = windowFunc
-		b.Run(fmt.Sprintf("%v", cas), func(b *testing.B) {
-			benchmarkWindowExecWithCase(b, cas)
-		})
+	concs := []int{1, 4}
+	for _, con := range concs {
+		for _, windowFunc := range windowFuncs {
+			cas := defaultWindowTestCase()
+			cas.rows = 100000
+			cas.ndv = 1000
+			cas.concurrency = con
+			cas.windowFunc = windowFunc
+			b.Run(fmt.Sprintf("%v", cas), func(b *testing.B) {
+				benchmarkWindowExecWithCase(b, cas)
+			})
+		}
 	}
 }
 
