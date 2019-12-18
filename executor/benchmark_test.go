@@ -385,7 +385,7 @@ func BenchmarkAggDistinct(b *testing.B) {
 	}
 }
 
-func buildWindowExecutor(ctx sessionctx.Context, windowFunc string, src Executor, schema *expression.Schema, partitionBy []*expression.Column) Executor {
+func buildWindowExecutor(ctx sessionctx.Context, windowFunc string, src Executor, schema *expression.Schema, partitionBy []*expression.Column, frame *core.WindowFrame) Executor {
 	plan := new(core.PhysicalWindow)
 
 	var args []expression.Expression
@@ -394,6 +394,10 @@ func buildWindowExecutor(ctx sessionctx.Context, windowFunc string, src Executor
 		args = append(args, &expression.Constant{Value: types.NewUintDatum(2)})
 	case ast.WindowFuncNthValue:
 		args = append(args, partitionBy[0], &expression.Constant{Value: types.NewUintDatum(2)})
+	case ast.AggFuncSum:
+		args = append(args, src.Schema().Columns[0])
+	case ast.AggFuncAvg:
+		args = append(args, src.Schema().Columns[0])
 	default:
 		args = append(args, partitionBy[0])
 	}
@@ -402,6 +406,7 @@ func buildWindowExecutor(ctx sessionctx.Context, windowFunc string, src Executor
 	for _, col := range partitionBy {
 		plan.PartitionBy = append(plan.PartitionBy, property.Item{Col: col})
 	}
+	plan.Frame = frame
 	plan.OrderBy = nil
 	plan.SetSchema(schema)
 	plan.Init(ctx, nil, 0)
@@ -419,6 +424,7 @@ type windowTestCase struct {
 	ndv         int // the number of distinct group-by keys
 	rows        int
 	concurrency int
+	frame       *core.WindowFrame
 	ctx         sessionctx.Context
 }
 
@@ -444,7 +450,7 @@ func defaultWindowTestCase() *windowTestCase {
 	ctx := mock.NewContext()
 	ctx.GetSessionVars().InitChunkSize = variable.DefInitChunkSize
 	ctx.GetSessionVars().MaxChunkSize = variable.DefMaxChunkSize
-	return &windowTestCase{ast.WindowFuncRowNumber, 1000, 10000000, 1, ctx}
+	return &windowTestCase{ast.WindowFuncRowNumber, 1000, 10000000, 1, nil, ctx}
 }
 
 func benchmarkWindowExecWithCase(b *testing.B, casTest *windowTestCase) {
@@ -467,7 +473,7 @@ func benchmarkWindowExecWithCase(b *testing.B, casTest *windowTestCase) {
 		b.StopTimer() // prepare a new window-executor
 		childCols := casTest.columns()
 		schema := expression.NewSchema(childCols...)
-		windowExec := buildWindowExecutor(casTest.ctx, casTest.windowFunc, dataSource, schema, childCols[1:2])
+		windowExec := buildWindowExecutor(casTest.ctx, casTest.windowFunc, dataSource, schema, childCols[1:2], casTest.frame)
 		tmpCtx := context.Background()
 		chk := newFirstChunk(windowExec)
 		dataSource.prepareChunks()
@@ -536,6 +542,33 @@ func BenchmarkWindowFunctions(b *testing.B) {
 			cas.ndv = 1000
 			cas.concurrency = con
 			cas.windowFunc = windowFunc
+			b.Run(fmt.Sprintf("%v", cas), func(b *testing.B) {
+				benchmarkWindowExecWithCase(b, cas)
+			})
+		}
+	}
+}
+
+func BenchmarkWindowFunctionsWithFraming(b *testing.B) {
+	b.ReportAllocs()
+	windowFuncs := []string{
+		ast.AggFuncSum,
+		ast.AggFuncAvg,
+	}
+	frames := []*core.WindowFrame{
+		{Type: ast.Rows, Start: &core.FrameBound{UnBounded: true}, End: &core.FrameBound{Type: ast.CurrentRow}},
+	}
+	concs := []int{1, 4}
+	for _, con := range concs {
+		for i, windowFunc := range windowFuncs {
+			cas := defaultWindowTestCase()
+			cas.rows = 100000
+			cas.ndv = 1000
+			cas.concurrency = con
+			cas.windowFunc = windowFunc
+			if i < len(frames) {
+				cas.frame = frames[i]
+			}
 			b.Run(fmt.Sprintf("%v", cas), func(b *testing.B) {
 				benchmarkWindowExecWithCase(b, cas)
 			})
