@@ -50,7 +50,7 @@ func (s *testTaskSuite) SetUpSuite(c *C) {
 func (s *testTaskSuite) TearDownSuite(c *C) {
 }
 
-func (s *testTaskSuite) TestGetWindowFrameSize(c *C) {
+func (s *testTaskSuite) TestEstimateWindowFrameSize(c *C) {
 	defer testleak.AfterTest(c)()
 	store, dom, err := newStoreWithBootstrap()
 	c.Assert(err, IsNil)
@@ -121,13 +121,21 @@ func (s *testTaskSuite) TestGetWindowFrameSize(c *C) {
 		c.Assert(err, IsNil, comment)
 
 		comment = Commentf("seq: %d, sql: %s, plan: %s", i, tt.sql, core.ToString(p))
-		w, ok := p.(core.PhysicalPlan).Children()[0].(*core.PhysicalWindowParallel)
-		c.Assert(ok, Equals, true, comment)
-		c.Assert(w.BasePhysicalWindow.GetWindowFrameSize(tt.count), Equals, tt.size, comment)
+		var bw *core.BasePhysicalWindow
+		switch w := p.(core.PhysicalPlan).Children()[0].(type) {
+		case *core.PhysicalWindow:
+			bw = &w.BasePhysicalWindow
+		case *core.PhysicalWindowParallel:
+			bw = &w.BasePhysicalWindow
+		default:
+			c.Fatalf("cast to PhysicalWindow/PhysicalWindowParallel failed: %s", comment)
+		}
+
+		c.Assert(bw.EstimateWindowFrameSize(tt.count), Equals, tt.size, comment)
 	}
 }
 
-func (s *testTaskSuite) TestGetWindowFuncsCostUnit(c *C) {
+func (s *testTaskSuite) TestEstimateWindowFuncsCostUnit(c *C) {
 	defer testleak.AfterTest(c)()
 	store, dom, err := newStoreWithBootstrap()
 	c.Assert(err, IsNil)
@@ -177,7 +185,7 @@ func (s *testTaskSuite) TestGetWindowFuncsCostUnit(c *C) {
 			mem:     1.0,
 		},
 		{
-			sql:     "select b, row_number() over w from t window w as (partition by b rows between 3 preceding and 3 following) ",
+			sql:     "select b, row_number() over w from t window w as (partition by b rows between 3 preceding and 3 following)",
 			planIdx: 0,
 			count:   100.0,
 			cpu:     100.0 * 1.0,
@@ -198,10 +206,74 @@ func (s *testTaskSuite) TestGetWindowFuncsCostUnit(c *C) {
 		for k := 0; k < tt.planIdx; k++ {
 			p = p.(core.PhysicalPlan).Children()[0]
 		}
-		w, ok := p.(*core.PhysicalWindowParallel)
-		c.Assert(ok, Equals, true, comment)
-		cpu, mem := w.BasePhysicalWindow.GetWindowFuncsCostUnit(tt.count)
+		var bw *core.BasePhysicalWindow
+		switch w := p.(type) {
+		case *core.PhysicalWindow:
+			bw = &w.BasePhysicalWindow
+		case *core.PhysicalWindowParallel:
+			bw = &w.BasePhysicalWindow
+		default:
+			c.Fatalf("cast to PhysicalWindow/PhysicalWindowParallel failed: %s", comment)
+		}
+
+		cpu, mem := bw.EstimateWindowFuncsCostUnit(tt.count)
 		c.Assert(cpu, Equals, tt.cpu, comment)
 		c.Assert(mem, Equals, tt.mem, comment)
+	}
+}
+
+func (s *testTaskSuite) TestEstimateNumberOfPartitions(c *C) {
+	defer testleak.AfterTest(c)()
+	store, dom, err := newStoreWithBootstrap()
+	c.Assert(err, IsNil)
+	defer func() {
+		dom.Close()
+		store.Close()
+	}()
+	se, err := session.CreateSession4Test(store)
+	c.Assert(err, IsNil)
+	_, err = se.Execute(context.Background(), "use test")
+	c.Assert(err, IsNil)
+	se.GetSessionVars().WindowConcurrency = 4
+
+	tests := []struct {
+		sql   string
+		parts float64
+	}{
+		{
+			sql:   "select b, sum(a) over(rows between 3 preceding and 3 following) from t",
+			parts: 1.0,
+		},
+		{
+			sql:   "select c, sum(a) over(partition by c rows between 3 preceding and 3 following) from t",
+			parts: 8000.0,
+		},
+		{
+			sql:   "select b, c, sum(a) over(partition by b, c rows between 3 preceding and 3 following) from t",
+			parts: 8000.0,
+		},
+	}
+
+	for i, tt := range tests {
+		comment := Commentf("seq: %d, sql: %s", i, tt.sql)
+		stmt, err := s.ParseOneStmt(tt.sql, "", "")
+		c.Assert(err, IsNil, comment)
+
+		core.Preprocess(se, stmt, s.is)
+		p, _, err := planner.Optimize(context.TODO(), se, stmt, s.is)
+		c.Assert(err, IsNil, comment)
+
+		comment = Commentf("seq: %d, sql: %s, plan: %s", i, tt.sql, core.ToString(p))
+		var bw *core.BasePhysicalWindow
+		switch w := p.(core.PhysicalPlan).Children()[0].(type) {
+		case *core.PhysicalWindow:
+			bw = &w.BasePhysicalWindow
+		case *core.PhysicalWindowParallel:
+			bw = &w.BasePhysicalWindow
+		default:
+			c.Fatalf("cast to PhysicalWindow/PhysicalWindowParallel failed: %s", comment)
+		}
+		parts := bw.EstimateNumberOfPartitions()
+		c.Assert(parts, Equals, tt.parts, comment)
 	}
 }
