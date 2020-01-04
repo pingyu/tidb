@@ -75,6 +75,27 @@ func enforceProperty(p *property.PhysicalProperty, tsk task, ctx sessionctx.Cont
 	return sort.attach2Task(tsk)
 }
 
+// optimizeByPartition insert `PhysicalPartition` to optimize performance by running in a parallel manner.
+func optimizeByPartition(p *property.PhysicalProperty, tsk task, ctx sessionctx.Context) task {
+	if tsk.plan() == nil {
+		return tsk
+	}
+	reqProp := &property.PhysicalProperty{ExpectedCnt: math.MaxFloat64}
+
+	switch pp := tsk.plan().(type) {
+	case *PhysicalWindow:
+		concurrency := ctx.GetSessionVars().WindowConcurrency
+		if concurrency > 1 {
+			part := PhysicalPartition{
+				Concurrency: concurrency,
+			}.Init(ctx, pp.statsInfo(), pp.SelectBlockOffset(), reqProp)
+			part.SetSchema(pp.Schema())
+			return part.attach2Task(tsk)
+		}
+	}
+	return tsk
+}
+
 // LogicalPlan is a tree of logical operators.
 // We can do a lot of logical optimizations to it, like predicate pushdown and column pruning.
 type LogicalPlan interface {

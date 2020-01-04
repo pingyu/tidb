@@ -179,6 +179,10 @@ func (p *baseLogicalPlan) findBestTask(prop *property.PhysicalProperty) (bestTas
 		}
 	}
 
+	if !prop.Enforced && prop.IsEmpty() {
+		bestTask = optimizeByPartition(prop, bestTask, p.basePlan.ctx)
+	}
+
 	p.storeTask(prop, bestTask)
 	return bestTask, nil
 }
