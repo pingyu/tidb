@@ -2694,8 +2694,9 @@ func (b *executorBuilder) buildPartitionExecutors(part *PartitionExec, head, tai
 		w.baseExecutor = newBaseExecutor(b.ctx, dataSource.Schema(), dataSource.ExplainID())
 
 		stub := &physicalPartitionDataSourceStub{
-			schema: dataSource.Schema(),
-			worker: w,
+			schema:     dataSource.Schema(),
+			worker:     w,
+			statsCount: dataSource.StatsCount(),
 		}
 		tail.SetChildren(stub)
 		w.childExec = b.build(head)
@@ -2711,13 +2712,28 @@ var _ plannercore.PhysicalPlan = &physicalPartitionDataSourceStub{}
 // physicalPartitionDataSourceStub is data source stub for building partition executor.
 type physicalPartitionDataSourceStub struct {
 	plannercore.PhysicalPlan
-	schema *expression.Schema
-	worker *partitionWorker
+	schema     *expression.Schema
+	worker     *partitionWorker
+	statsCount float64
 }
 
 // Schema implements Plan Schema interface.
 func (p *physicalPartitionDataSourceStub) Schema() *expression.Schema {
 	return p.schema
+}
+
+// Children implements Plan Children interface.
+func (p *physicalPartitionDataSourceStub) Children() []plannercore.PhysicalPlan {
+	return nil
+}
+
+// StatsCount implements Plan StatsCount interface.
+func (p *physicalPartitionDataSourceStub) StatsCount() float64 {
+	return p.statsCount
+}
+
+func (b *executorBuilder) buildPartitionDataSourceStub(v *physicalPartitionDataSourceStub) *partitionWorker {
+	return v.worker
 }
 
 func (b *executorBuilder) buildSQLBindExec(v *plannercore.SQLBindPlan) Executor {
@@ -2736,10 +2752,6 @@ func (b *executorBuilder) buildSQLBindExec(v *plannercore.SQLBindPlan) Executor 
 		bindAst:      v.BindStmt,
 	}
 	return e
-}
-
-func (b *executorBuilder) buildPartitionDataSourceStub(v *physicalPartitionDataSourceStub) *partitionWorker {
-	return v.worker
 }
 
 func newRowDecoder(ctx sessionctx.Context, schema *expression.Schema, tbl *model.TableInfo) *rowcodec.ChunkDecoder {
