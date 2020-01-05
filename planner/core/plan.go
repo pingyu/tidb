@@ -76,20 +76,20 @@ func enforceProperty(p *property.PhysicalProperty, tsk task, ctx sessionctx.Cont
 }
 
 // optimizeByPartition insert `PhysicalPartition` to optimize performance by running in a parallel manner.
-func optimizeByPartition(p *property.PhysicalProperty, tsk task, ctx sessionctx.Context) task {
+func optimizeByPartition(pp PhysicalPlan, prop *property.PhysicalProperty, tsk task, ctx sessionctx.Context) task {
 	if tsk.plan() == nil {
 		return tsk
 	}
 	reqProp := &property.PhysicalProperty{ExpectedCnt: math.MaxFloat64}
 
-	switch pp := tsk.plan().(type) {
+	switch p := pp.(type) {
 	case *PhysicalWindow:
 		concurrency := ctx.GetSessionVars().WindowConcurrency
 		if concurrency > 1 {
 			part := PhysicalPartition{
 				Concurrency: concurrency,
-			}.Init(ctx, pp.statsInfo(), pp.SelectBlockOffset(), reqProp)
-			part.SetSchema(pp.Schema())
+			}.Init(ctx, p.statsInfo(), p.SelectBlockOffset(), reqProp)
+			part.SetSchema(p.Schema())
 			return part.attach2Task(tsk)
 		}
 	}
