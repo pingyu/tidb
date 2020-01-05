@@ -175,7 +175,7 @@ func (p *baseLogicalPlan) findBestTask(prop *property.PhysicalProperty) (bestTas
 
 		// optimize by partition executor to running in parallel manner.
 		if prop.IsEmpty() {
-			curTask = optimizeByPartition(pp, prop, curTask, p.basePlan.ctx)
+			curTask = optimizeByPartition(pp, curTask, p.basePlan.ctx)
 		}
 
 		// get the most efficient one.

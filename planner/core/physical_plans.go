@@ -14,6 +14,8 @@
 package core
 
 import (
+	"unsafe"
+
 	"github.com/pingcap/parser/ast"
 	"github.com/pingcap/parser/model"
 	"github.com/pingcap/tidb/expression"
@@ -53,6 +55,7 @@ var (
 	_ PhysicalPlan = &PhysicalUnionScan{}
 	_ PhysicalPlan = &PhysicalWindow{}
 	_ PhysicalPlan = &PhysicalPartition{}
+	_ PhysicalPlan = &PhysicalPartitionDataSourceStub{}
 	_ PhysicalPlan = &BatchPointGetPlan{}
 )
 
@@ -551,6 +554,15 @@ type PhysicalPartition struct {
 	physicalSchemaProducer
 
 	Concurrency int
+	Tail        PhysicalPlan
+	DataSource  PhysicalPlan
+}
+
+// PhysicalPartitionDataSourceStub represents a data source stub of partition plan.
+type PhysicalPartitionDataSourceStub struct {
+	physicalSchemaProducer
+
+	Worker unsafe.Pointer
 }
 
 // CollectPlanStatsVersion uses to collect the statistics version of the plan.

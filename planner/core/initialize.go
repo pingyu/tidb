@@ -209,6 +209,14 @@ func (p PhysicalPartition) Init(ctx sessionctx.Context, stats *property.StatsInf
 	return &p
 }
 
+// Init initializes PhysicalPartitionDataSourceStub.
+func (p PhysicalPartitionDataSourceStub) Init(ctx sessionctx.Context, stats *property.StatsInfo, offset int, props ...*property.PhysicalProperty) *PhysicalPartitionDataSourceStub {
+	p.basePhysicalPlan = newBasePhysicalPlan(ctx, plancodec.TypePartitionDataSourceStub, &p, offset)
+	p.childrenReqProps = props
+	p.stats = stats
+	return &p
+}
+
 // Init initializes Update.
 func (p Update) Init(ctx sessionctx.Context) *Update {
 	p.basePlan = newBasePlan(ctx, plancodec.TypeUpdate, 0)

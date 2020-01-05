@@ -76,24 +76,40 @@ func enforceProperty(p *property.PhysicalProperty, tsk task, ctx sessionctx.Cont
 }
 
 // optimizeByPartition insert `PhysicalPartition` to optimize performance by running in a parallel manner.
-func optimizeByPartition(pp PhysicalPlan, prop *property.PhysicalProperty, tsk task, ctx sessionctx.Context) task {
+func optimizeByPartition(pp PhysicalPlan, tsk task, ctx sessionctx.Context) task {
 	if tsk.plan() == nil {
 		return tsk
 	}
-	reqProp := &property.PhysicalProperty{ExpectedCnt: math.MaxFloat64}
 
+	// Don't use `tsk.plan()` here, which will probably be different from `pp`.
+	// Eg., when `pp` is `NominalSort`, `tsk.plan()` would be its child.
 	switch p := pp.(type) {
 	case *PhysicalWindow:
-		concurrency := ctx.GetSessionVars().WindowConcurrency
-		if concurrency > 1 {
-			part := PhysicalPartition{
-				Concurrency: concurrency,
-			}.Init(ctx, p.statsInfo(), p.SelectBlockOffset(), reqProp)
-			part.SetSchema(p.Schema())
+		if part := optimizeByPartition4Window(p, ctx); part != nil {
 			return part.attach2Task(tsk)
 		}
 	}
 	return tsk
+}
+
+func optimizeByPartition4Window(pp *PhysicalWindow, ctx sessionctx.Context) *PhysicalPartition {
+	concurrency := ctx.GetSessionVars().WindowConcurrency
+	if concurrency > 1 {
+		var tail, dataSource PhysicalPlan = pp, pp.Children()[0]
+		if sort, ok := dataSource.(*PhysicalSort); ok {
+			tail = sort
+			dataSource = sort.Children()[0]
+		}
+		reqProp := &property.PhysicalProperty{ExpectedCnt: math.MaxFloat64}
+		part := PhysicalPartition{
+			Concurrency: concurrency,
+			Tail:        tail,
+			DataSource:  dataSource,
+		}.Init(ctx, pp.statsInfo(), pp.SelectBlockOffset(), reqProp)
+		part.SetSchema(pp.Schema())
+		return part
+	}
+	return nil
 }
 
 // LogicalPlan is a tree of logical operators.

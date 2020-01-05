@@ -517,7 +517,7 @@ func (p *PhysicalWindow) ExplainInfo() string {
 // ExplainInfo implements Plan interface.
 func (p *PhysicalPartition) ExplainInfo() string {
 	buffer := bytes.NewBufferString("")
-	fmt.Fprintf(buffer, "execution info: Concurrency: %v", p.Concurrency)
+	fmt.Fprintf(buffer, "execution info: concurrency:%v, data source:%v", p.Concurrency, p.DataSource.ExplainID())
 	return buffer.String()
 }
 

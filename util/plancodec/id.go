@@ -86,6 +86,8 @@ const (
 	TypeWindow = "Window"
 	// TypePartition is the type of Partition.
 	TypePartition = "Partition"
+	// TypePartitionDataSourceStub is the type of Partition.
+	TypePartitionDataSourceStub = "PartitionDataSourceStub"
 	// TypeTiKVSingleGather is the type of TiKVSingleGather.
 	TypeTiKVSingleGather = "TiKVSingleGather"
 	// TypeIndexMerge is the type of IndexMergeReader

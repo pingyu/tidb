@@ -22,6 +22,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unsafe"
 
 	"github.com/cznic/sortutil"
 	"github.com/pingcap/errors"
@@ -212,7 +213,7 @@ func (b *executorBuilder) build(p plannercore.Plan) Executor {
 		return b.buildWindow(v)
 	case *plannercore.PhysicalPartition:
 		return b.buildPartition(v)
-	case *physicalPartitionDataSourceStub:
+	case *plannercore.PhysicalPartitionDataSourceStub:
 		return b.buildPartitionDataSourceStub(v)
 	case *plannercore.SQLBindPlan:
 		return b.buildSQLBindExec(v)
@@ -2651,7 +2652,7 @@ func (b *executorBuilder) buildPartition(v *plannercore.PhysicalPartition) *Part
 
 	switch child := v.Children()[0].(type) {
 	case *plannercore.PhysicalWindow:
-		if err := b.buildPartition4Window(part, child); err != nil {
+		if err := b.buildPartition4Window(v, part, child); err != nil {
 			b.err = err
 			return nil
 		}
@@ -2662,7 +2663,7 @@ func (b *executorBuilder) buildPartition(v *plannercore.PhysicalPartition) *Part
 	return part
 }
 
-func (b *executorBuilder) buildPartition4Window(part *PartitionExec, win *plannercore.PhysicalWindow) error {
+func (b *executorBuilder) buildPartition4Window(partPlan *plannercore.PhysicalPartition, part *PartitionExec, win *plannercore.PhysicalWindow) error {
 	byItems := make([]expression.Expression, 0, len(win.PartitionBy))
 	for _, item := range win.PartitionBy {
 		byItems = append(byItems, item.Col)
@@ -2676,12 +2677,7 @@ func (b *executorBuilder) buildPartition4Window(part *PartitionExec, win *planne
 	//   ==> Partition: for main thread
 	//   ==> DataSource: for data source thread
 	//   ==> Window -> Sort(optional) -> partitionWorker: for worker
-	var tail, dataSource plannercore.PhysicalPlan = win, win.Children()[0]
-	if sort, ok := dataSource.(*plannercore.PhysicalSort); ok {
-		tail = sort
-		dataSource = sort.Children()[0]
-	}
-	return b.buildPartitionExecutors(part, win, tail, dataSource)
+	return b.buildPartitionExecutors(part, win, partPlan.Tail, partPlan.DataSource)
 }
 
 func (b *executorBuilder) buildPartitionExecutors(part *PartitionExec, head, tail, dataSource plannercore.PhysicalPlan) error {
@@ -2693,11 +2689,11 @@ func (b *executorBuilder) buildPartitionExecutors(part *PartitionExec, head, tai
 	for _, w := range part.workers {
 		w.baseExecutor = newBaseExecutor(b.ctx, dataSource.Schema(), dataSource.ExplainID())
 
-		stub := &physicalPartitionDataSourceStub{
-			schema:     dataSource.Schema(),
-			worker:     w,
-			statsCount: dataSource.StatsCount(),
-		}
+		stub := plannercore.PhysicalPartitionDataSourceStub{
+			Worker: (unsafe.Pointer)(w),
+		}.Init(b.ctx, dataSource.Stats(), dataSource.SelectBlockOffset(), nil)
+		stub.SetSchema(dataSource.Schema())
+
 		tail.SetChildren(stub)
 		w.childExec = b.build(head)
 		if b.err != nil {
@@ -2707,33 +2703,8 @@ func (b *executorBuilder) buildPartitionExecutors(part *PartitionExec, head, tai
 	return nil
 }
 
-var _ plannercore.PhysicalPlan = &physicalPartitionDataSourceStub{}
-
-// physicalPartitionDataSourceStub is data source stub for building partition executor.
-type physicalPartitionDataSourceStub struct {
-	plannercore.PhysicalPlan
-	schema     *expression.Schema
-	worker     *partitionWorker
-	statsCount float64
-}
-
-// Schema implements Plan Schema interface.
-func (p *physicalPartitionDataSourceStub) Schema() *expression.Schema {
-	return p.schema
-}
-
-// Children implements Plan Children interface.
-func (p *physicalPartitionDataSourceStub) Children() []plannercore.PhysicalPlan {
-	return nil
-}
-
-// StatsCount implements Plan StatsCount interface.
-func (p *physicalPartitionDataSourceStub) StatsCount() float64 {
-	return p.statsCount
-}
-
-func (b *executorBuilder) buildPartitionDataSourceStub(v *physicalPartitionDataSourceStub) *partitionWorker {
-	return v.worker
+func (b *executorBuilder) buildPartitionDataSourceStub(v *plannercore.PhysicalPartitionDataSourceStub) *partitionWorker {
+	return (*partitionWorker)(v.Worker)
 }
 
 func (b *executorBuilder) buildSQLBindExec(v *plannercore.SQLBindPlan) Executor {
