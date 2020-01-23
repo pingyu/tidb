@@ -353,13 +353,32 @@ func (e *shuffleWorker) run(ctx context.Context, waitGroup *sync.WaitGroup) {
 	}
 }
 
-var _ partitionSplitter = &partitionHashSplitter{}
+type partitionData struct {
+}
+
+var _ partitionSplitter = (*partitionHashSplitter)(nil)
 
 type partitionSplitter interface {
 	split(ctx sessionctx.Context, input *chunk.Chunk, workerIndices []int) ([]int, error)
+	open(ctx context.Context) error
+	workerNext(ctx context.Context, input *chunk.Chunk) (giveBackCh chan<- shuffleOutput, err error)
+}
+
+type basePartitionSplitter struct {
+	finishCh <-chan shuffleOutput
+	fanOut   int
+}
+
+func (*basePartitionSplitter) open(ctx context.Context) error {
+
+}
+
+func (*basePartitionSplitter) workerNext(ctx context.Context, input *chunk.Chunk) (giveBackCh chan<- shuffleOutput, err error) {
+
 }
 
 type partitionHashSplitter struct {
+	basePartitionSplitter
 	byItems    []expression.Expression
 	numWorkers int
 	hashKeys   [][]byte

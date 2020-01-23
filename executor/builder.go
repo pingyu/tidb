@@ -2644,7 +2644,11 @@ func (b *executorBuilder) buildShuffle(v *plannercore.PhysicalShuffle) *ShuffleE
 		concurrency: v.Concurrency,
 	}
 
+	// upstream
+	shuffle.fanOut = v.FanOut
 	switch v.SplitterType {
+	case plannercore.PartitionSerialSplitterType:
+		shuffle.splitter = nil
 	case plannercore.PartitionHashSplitterType:
 		shuffle.splitter = &partitionHashSplitter{
 			byItems:    v.HashByItems,
@@ -2652,6 +2656,14 @@ func (b *executorBuilder) buildShuffle(v *plannercore.PhysicalShuffle) *ShuffleE
 		}
 	default:
 		panic("Not implemented. Should not reach here.")
+	}
+
+	// downstream
+	switch v.MergerType {
+	case plannercore.PartitionSerialMergerType:
+		shuffler.merger = nil
+	case plannercore.PartitionSimpleMergerType:
+		shuffler.merger = &partitionSimpleMerger{}
 	}
 
 	shuffle.dataSource = b.build(v.DataSource)

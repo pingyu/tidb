@@ -563,18 +563,37 @@ type PhysicalShuffle struct {
 
 	Concurrency int
 	Tail        PhysicalPlan
-	DataSource  PhysicalPlan
+	NextShuffle *PhysicalShuffle
 
+	// downstream
+	MergerType       PartitionMergerType
+	MergeSortByItems []expression.Expression
+	// upstream
+	FanOut       int
 	SplitterType PartitionSplitterType
 	HashByItems  []expression.Expression
 }
+
+// PartitionMergerType is the type of `Shuffle` executor merger, which merges results from partitions.
+type PartitionMergerType int
+
+const (
+	// PartitionSerialMergerType is for serial executing.
+	PartitionSerialMergerType = iota
+	// PartitionSimpleMergerType merges partitions without any other process.
+	PartitionSimpleMergerType
+	// PartitionMergeSortMergerType merges by Merge-Sort.
+	PartitionMergeSortMergerType
+)
 
 // PartitionSplitterType is the type of `Shuffle` executor splitter, which splits data source into partitions.
 type PartitionSplitterType int
 
 const (
+	// PartitionSerialSplitterType is for serial executing.
+	PartitionSerialSplitterType = iota
 	// PartitionHashSplitterType is the splitter splits by hash.
-	PartitionHashSplitterType = iota
+	PartitionHashSplitterType
 )
 
 // PhysicalShuffleDataSourceStub represents a data source stub of `PhysicalShuffle`,

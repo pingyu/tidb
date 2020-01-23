@@ -121,14 +121,34 @@ func optimizeByShuffle4Window(pp *PhysicalWindow, ctx sessionctx.Context) *Physi
 	for _, item := range pp.PartitionBy {
 		byItems = append(byItems, item.Col)
 	}
+
+	nextShuffle := getNextShuffle(ctx, tail, dataSource)
+	nextShuffle.FanOut = concurrency
+	nextShuffle.SplitterType = PartitionHashSplitterType
+	nextShuffle.HashByItems = byItems
+
 	reqProp := &property.PhysicalProperty{ExpectedCnt: math.MaxFloat64}
 	shuffle := PhysicalShuffle{
 		Concurrency:  concurrency,
 		Tail:         tail,
-		DataSource:   dataSource,
-		SplitterType: PartitionHashSplitterType,
-		HashByItems:  byItems,
+		NextShuffle:  nextShuffle,
+		MergerType:   PartitionSimpleMergerType,
+		FanOut:       0,
+		SplitterType: PartitionSerialSplitterType,
 	}.Init(ctx, pp.statsInfo(), pp.SelectBlockOffset(), reqProp)
+	return shuffle
+}
+
+func getNextShuffle(ctx sessionctx.Context, tail, dataSource PhysicalPlan) *PhysicalShuffle {
+	if shuffle, ok := dataSource.(*PhysicalShuffle); ok {
+		return shuffle
+	}
+	reqProp := &property.PhysicalProperty{ExpectedCnt: math.MaxFloat64}
+	shuffle := PhysicalShuffle{
+		MergerType: PartitionSerialMergerType,
+	}.Init(ctx, dataSource.statsInfo(), dataSource.SelectBlockOffset(), reqProp)
+	tail.SetChildren(shuffle)
+	shuffle.SetChildren(dataSource)
 	return shuffle
 }
 
