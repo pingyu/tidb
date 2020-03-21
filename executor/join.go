@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/pingcap/errors"
 	"github.com/pingcap/failpoint"
@@ -72,8 +73,9 @@ type HashJoinExec struct {
 	joinChkResourceCh  []chan *chunk.Chunk
 	joinResultCh       chan *hashjoinWorkerResult
 
-	memTracker  *memory.Tracker // track memory usage.
-	diskTracker *disk.Tracker   // track disk usage.
+	memTracker       *memory.Tracker // track memory usage.
+	diskTracker      *disk.Tracker   // track disk usage.
+	join2ChunkElapse int64           // trace time cost of join2Chunk.
 
 	outerMatchedStatus []*bitmap.ConcurrentBitmap
 	useOuterToBuild    bool
@@ -140,6 +142,7 @@ func (e *HashJoinExec) Close() error {
 		concurrency := cap(e.joiners)
 		e.runtimeStats.SetConcurrencyInfo("Concurrency", concurrency)
 		e.runtimeStats.SetAdditionalInfo(e.rowContainer.stat.String())
+		e.runtimeStats.SetAdditionalTimeCostInfo("join", (time.Duration)(e.join2ChunkElapse))
 	}
 	err := e.baseExecutor.Close()
 	return err
@@ -457,11 +460,13 @@ func (e *HashJoinExec) runJoinWorker(workerID uint, probeKeyColIdx []int) {
 		if !ok {
 			break
 		}
+		start := time.Now()
 		if e.useOuterToBuild {
 			ok, joinResult = e.join2ChunkForOuterHashJoin(workerID, probeSideResult, hCtx, joinResult)
 		} else {
 			ok, joinResult = e.join2Chunk(workerID, probeSideResult, hCtx, joinResult, selected)
 		}
+		atomic.AddInt64(&e.join2ChunkElapse, (int64)(time.Since(start)))
 		if !ok {
 			break
 		}

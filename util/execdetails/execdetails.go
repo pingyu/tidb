@@ -358,6 +358,12 @@ type concurrencyInfo struct {
 	concurrencyNum  int
 }
 
+// timeCostInfo is used to save additional time cost information.
+type timeCostInfo struct {
+	name     string
+	duration time.Duration
+}
+
 // RuntimeStats collects one executor's execution info.
 type RuntimeStats struct {
 	// executor's Next() called times.
@@ -371,6 +377,8 @@ type RuntimeStats struct {
 	mu sync.Mutex
 	// executor concurrency information
 	concurrency []concurrencyInfo
+	// executor additional time cost information
+	additionalTimeCost []timeCostInfo
 
 	// additional information for executors
 	additionalInfo string
@@ -466,6 +474,11 @@ func (e *RuntimeStats) SetConcurrencyInfo(name string, num int) {
 	e.concurrency = append(e.concurrency, concurrencyInfo{concurrencyName: name, concurrencyNum: num})
 }
 
+// SetAdditionalTimeCostInfo sets the additional time cost information.
+func (e *RuntimeStats) SetAdditionalTimeCostInfo(name string, duration time.Duration) {
+	e.additionalTimeCost = append(e.additionalTimeCost, timeCostInfo{name, duration})
+}
+
 // SetAdditionalInfo sets the additional information.
 func (e *RuntimeStats) SetAdditionalInfo(info string) {
 	e.mu.Lock()
@@ -487,6 +500,11 @@ func (e *RuntimeStats) String() string {
 			} else {
 				result += fmt.Sprintf(", %s:OFF", concurrency.concurrencyName)
 			}
+		}
+	}
+	if len(e.additionalTimeCost) > 0 {
+		for _, timeCost := range e.additionalTimeCost {
+			result += fmt.Sprintf(", %s:%v", timeCost.name, timeCost.duration)
 		}
 	}
 	if len(e.additionalInfo) > 0 {
