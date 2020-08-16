@@ -279,6 +279,9 @@ func (s *tikvStore) runSafePointChecker() {
 }
 
 func (s *tikvStore) Begin() (kv.Transaction, error) {
+	// for "High Performance TiDB" project, see https://docs.qq.com/sheet/DSlBwS3VCb01kTnZw?tab=BB08J2
+	logutil.BgLogger().Info("hello transaction")
+
 	txn, err := newTiKVTxn(s)
 	if err != nil {
 		return nil, errors.Trace(err)
@@ -288,6 +291,9 @@ func (s *tikvStore) Begin() (kv.Transaction, error) {
 
 // BeginWithStartTS begins a transaction with startTS.
 func (s *tikvStore) BeginWithStartTS(startTS uint64) (kv.Transaction, error) {
+	// for "High Performance TiDB" project, see https://docs.qq.com/sheet/DSlBwS3VCb01kTnZw?tab=BB08J2
+	logutil.BgLogger().Info("hello transaction")
+
 	txn, err := newTikvTxnWithStartTS(s, startTS, s.nextReplicaReadSeed())
 	if err != nil {
 		return nil, errors.Trace(err)
