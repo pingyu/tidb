@@ -243,7 +243,6 @@ func (a *aggregationPushDownSolver) checkAnyCountSumAvg(aggFuncs []*aggregation.
 	return false
 }
 
-<<<<<<< HEAD
 func (a *aggregationPushDownSolver) splitPartialAgg(agg *LogicalAggregation, partialAggFuncs []*aggregation.AggFuncDesc, partialGbyItems []expression.Expression) (pushedAgg *LogicalAggregation) {
 	partial, final, _ := BuildFinalModeAggregation(agg.ctx, &AggInfo{
 		AggFuncs:            agg.AggFuncs,
@@ -251,48 +250,7 @@ func (a *aggregationPushDownSolver) splitPartialAgg(agg *LogicalAggregation, par
 		Schema:              agg.schema,
 		PartialAggFuncs:     partialAggFuncs,
 		PartialGroupByItems: partialGbyItems,
-	}, false)
-=======
-// TODO:
-//   1. https://github.com/pingcap/tidb/issues/16355, push avg & distinct functions across join
-//   2. remove this method and use splitPartialAgg instead for clean code.
-func (a *aggregationPushDownSolver) makeNewAgg(ctx sessionctx.Context, aggFuncs []*aggregation.AggFuncDesc, gbyCols []*expression.Column, aggHints aggHintInfo, blockOffset int) (*LogicalAggregation, error) {
-	agg := LogicalAggregation{
-		GroupByItems: expression.Column2Exprs(gbyCols),
-		aggHints:     aggHints,
-	}.Init(ctx, blockOffset)
-	aggLen := len(aggFuncs) + len(gbyCols)
-	newAggFuncDescs := make([]*aggregation.AggFuncDesc, 0, aggLen)
-	schema := expression.NewSchema(make([]*expression.Column, 0, aggLen)...)
-	for _, aggFunc := range aggFuncs {
-		var newFuncs []*aggregation.AggFuncDesc
-		newFuncs, schema = a.decompose(ctx, aggFunc, schema)
-		newAggFuncDescs = append(newAggFuncDescs, newFuncs...)
-	}
-	for _, gbyCol := range gbyCols {
-		firstRow, err := aggregation.NewAggFuncDesc(agg.ctx, ast.AggFuncFirstRow, []expression.Expression{gbyCol}, false)
-		if err != nil {
-			return nil, err
-		}
-		newCol, _ := gbyCol.Clone().(*expression.Column)
-		newCol.RetType = firstRow.RetTp
-		newAggFuncDescs = append(newAggFuncDescs, firstRow)
-		schema.Append(newCol)
-	}
-	agg.AggFuncs = newAggFuncDescs
-	agg.SetSchema(schema)
-	// TODO: Add a Projection if any argument of aggregate funcs or group by items are scalar functions.
-	// agg.buildProjectionIfNecessary()
-	return agg, nil
-}
-
-func (a *aggregationPushDownSolver) splitPartialAgg(agg *LogicalAggregation) (pushedAgg *LogicalAggregation) {
-	partial, final, _ := BuildFinalModeAggregation(agg.ctx, &AggInfo{
-		AggFuncs:     agg.AggFuncs,
-		GroupByItems: agg.GroupByItems,
-		Schema:       agg.schema,
 	}, false, false)
->>>>>>> master
 	agg.SetSchema(final.Schema)
 	agg.AggFuncs = final.AggFuncs
 	agg.GroupByItems = final.GroupByItems
