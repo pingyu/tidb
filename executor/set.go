@@ -33,8 +33,12 @@ import (
 	"github.com/pingcap/tidb/util/gcutil"
 	"github.com/pingcap/tidb/util/logutil"
 	"github.com/pingcap/tidb/util/stmtsummary"
-	"github.com/pingcap/tidb/util/stringutil"
 	"go.uber.org/zap"
+)
+
+const (
+	scopeGlobal  = "global"
+	scopeSession = "session"
 )
 
 // SetExecutor executes set statement.
@@ -86,17 +90,15 @@ func (e *SetExecutor) Next(ctx context.Context, req *chunk.Chunk) error {
 			if err != nil {
 				return err
 			}
-
+			sessionVars.UsersLock.Lock()
 			if value.IsNull() {
 				delete(sessionVars.Users, name)
+				delete(sessionVars.UserVarTypes, name)
 			} else {
-				svalue, err1 := value.ToString()
-				if err1 != nil {
-					return err1
-				}
-
-				sessionVars.SetUserVar(name, stringutil.Copy(svalue), value.Collation())
+				sessionVars.Users[name] = value
+				sessionVars.UserVarTypes[name] = v.Expr.GetType()
 			}
+			sessionVars.UsersLock.Unlock()
 			continue
 		}
 
@@ -132,7 +134,9 @@ func (e *SetExecutor) setSysVariable(name string, v *expression.VarAssignment) e
 		return errors.Errorf("Variable '%s' is a read only variable", name)
 	}
 	var valStr string
+	var scopeStr string
 	if v.IsGlobal {
+		scopeStr = scopeGlobal
 		// Set global scope system variable.
 		if sysVar.Scope&variable.ScopeGlobal == 0 {
 			return errors.Errorf("Variable '%s' is a SESSION variable and can't be used with SET GLOBAL", name)
@@ -163,6 +167,7 @@ func (e *SetExecutor) setSysVariable(name string, v *expression.VarAssignment) e
 			return err
 		}
 	} else {
+		scopeStr = scopeSession
 		// Set session scope system variable.
 		if sysVar.Scope&variable.ScopeSession == 0 {
 			return errors.Errorf("Variable '%s' is a GLOBAL variable and should be set with SET GLOBAL", name)
@@ -174,10 +179,6 @@ func (e *SetExecutor) setSysVariable(name string, v *expression.VarAssignment) e
 		oldSnapshotTS := sessionVars.SnapshotTS
 		if name == variable.TxnIsolationOneShot && sessionVars.InTxn() {
 			return errors.Trace(ErrCantChangeTxCharacteristics)
-		}
-		if name == variable.TiDBFoundInPlanCache {
-			sessionVars.StmtCtx.AppendWarning(fmt.Errorf("Set operation for '%s' will not take effect", variable.TiDBFoundInPlanCache))
-			return nil
 		}
 		err = variable.SetSessionSystemVar(sessionVars, name, value)
 		if err != nil {
@@ -203,14 +204,16 @@ func (e *SetExecutor) setSysVariable(name string, v *expression.VarAssignment) e
 			valStr, err = value.ToString()
 			terror.Log(err)
 		}
-		if name != variable.AutoCommit {
-			logutil.BgLogger().Info("set session var", zap.Uint64("conn", sessionVars.ConnectionID), zap.String("name", name), zap.String("val", valStr))
-		} else {
-			// Some applications will set `autocommit` variable before query.
-			// This will print too many unnecessary log info.
-			logutil.BgLogger().Debug("set session var", zap.Uint64("conn", sessionVars.ConnectionID), zap.String("name", name), zap.String("val", valStr))
-		}
 	}
+	if scopeStr == scopeGlobal {
+		logutil.BgLogger().Info(fmt.Sprintf("set %s var", scopeStr), zap.Uint64("conn", sessionVars.ConnectionID), zap.String("name", name), zap.String("val", valStr))
+	} else {
+		// Clients are often noisy in setting session variables such as
+		// autocommit, timezone, query cache
+		logutil.BgLogger().Debug(fmt.Sprintf("set %s var", scopeStr), zap.Uint64("conn", sessionVars.ConnectionID), zap.String("name", name), zap.String("val", valStr))
+	}
+
+	valStrToBoolStr := variable.BoolToOnOff(variable.TiDBOptOn(valStr))
 
 	switch name {
 	case variable.TiDBEnableStmtSummary:
@@ -226,7 +229,7 @@ func (e *SetExecutor) setSysVariable(name string, v *expression.VarAssignment) e
 	case variable.TiDBStmtSummaryMaxSQLLength:
 		return stmtsummary.StmtSummaryByDigestMap.SetMaxSQLLength(valStr, !v.IsGlobal)
 	case variable.TiDBCapturePlanBaseline:
-		variable.CapturePlanBaseline.Set(strings.ToLower(valStr), !v.IsGlobal)
+		variable.CapturePlanBaseline.Set(valStrToBoolStr, !v.IsGlobal)
 	}
 
 	return nil

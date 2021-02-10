@@ -38,7 +38,7 @@ func (a *aggregationPushDownSolver) isDecomposableWithJoin(fun *aggregation.AggF
 		return false
 	}
 	switch fun.Name {
-	case ast.AggFuncGroupConcat, ast.AggFuncVarPop, ast.AggFuncJsonObjectAgg:
+	case ast.AggFuncGroupConcat, ast.AggFuncVarPop, ast.AggFuncJsonObjectAgg, ast.AggFuncStddevPop, ast.AggFuncVarSamp, ast.AggFuncStddevSamp, ast.AggFuncApproxPercentile:
 		return false
 	case ast.AggFuncMax, ast.AggFuncMin, ast.AggFuncFirstRow:
 		return true
@@ -54,7 +54,7 @@ func (a *aggregationPushDownSolver) isDecomposableWithUnion(fun *aggregation.Agg
 		return false
 	}
 	switch fun.Name {
-	case ast.AggFuncGroupConcat, ast.AggFuncVarPop, ast.AggFuncJsonObjectAgg:
+	case ast.AggFuncGroupConcat, ast.AggFuncVarPop, ast.AggFuncJsonObjectAgg, ast.AggFuncApproxPercentile:
 		return false
 	case ast.AggFuncMax, ast.AggFuncMin, ast.AggFuncFirstRow:
 		return true
@@ -243,6 +243,7 @@ func (a *aggregationPushDownSolver) checkAnyCountSumAvg(aggFuncs []*aggregation.
 	return false
 }
 
+<<<<<<< HEAD
 func (a *aggregationPushDownSolver) splitPartialAgg(agg *LogicalAggregation, partialAggFuncs []*aggregation.AggFuncDesc, partialGbyItems []expression.Expression) (pushedAgg *LogicalAggregation) {
 	partial, final, _ := BuildFinalModeAggregation(agg.ctx, &AggInfo{
 		AggFuncs:            agg.AggFuncs,
@@ -251,10 +252,50 @@ func (a *aggregationPushDownSolver) splitPartialAgg(agg *LogicalAggregation, par
 		PartialAggFuncs:     partialAggFuncs,
 		PartialGroupByItems: partialGbyItems,
 	}, false)
+=======
+// TODO:
+//   1. https://github.com/pingcap/tidb/issues/16355, push avg & distinct functions across join
+//   2. remove this method and use splitPartialAgg instead for clean code.
+func (a *aggregationPushDownSolver) makeNewAgg(ctx sessionctx.Context, aggFuncs []*aggregation.AggFuncDesc, gbyCols []*expression.Column, aggHints aggHintInfo, blockOffset int) (*LogicalAggregation, error) {
+	agg := LogicalAggregation{
+		GroupByItems: expression.Column2Exprs(gbyCols),
+		aggHints:     aggHints,
+	}.Init(ctx, blockOffset)
+	aggLen := len(aggFuncs) + len(gbyCols)
+	newAggFuncDescs := make([]*aggregation.AggFuncDesc, 0, aggLen)
+	schema := expression.NewSchema(make([]*expression.Column, 0, aggLen)...)
+	for _, aggFunc := range aggFuncs {
+		var newFuncs []*aggregation.AggFuncDesc
+		newFuncs, schema = a.decompose(ctx, aggFunc, schema)
+		newAggFuncDescs = append(newAggFuncDescs, newFuncs...)
+	}
+	for _, gbyCol := range gbyCols {
+		firstRow, err := aggregation.NewAggFuncDesc(agg.ctx, ast.AggFuncFirstRow, []expression.Expression{gbyCol}, false)
+		if err != nil {
+			return nil, err
+		}
+		newCol, _ := gbyCol.Clone().(*expression.Column)
+		newCol.RetType = firstRow.RetTp
+		newAggFuncDescs = append(newAggFuncDescs, firstRow)
+		schema.Append(newCol)
+	}
+	agg.AggFuncs = newAggFuncDescs
+	agg.SetSchema(schema)
+	// TODO: Add a Projection if any argument of aggregate funcs or group by items are scalar functions.
+	// agg.buildProjectionIfNecessary()
+	return agg, nil
+}
+
+func (a *aggregationPushDownSolver) splitPartialAgg(agg *LogicalAggregation) (pushedAgg *LogicalAggregation) {
+	partial, final, _ := BuildFinalModeAggregation(agg.ctx, &AggInfo{
+		AggFuncs:     agg.AggFuncs,
+		GroupByItems: agg.GroupByItems,
+		Schema:       agg.schema,
+	}, false, false)
+>>>>>>> master
 	agg.SetSchema(final.Schema)
 	agg.AggFuncs = final.AggFuncs
 	agg.GroupByItems = final.GroupByItems
-	agg.collectGroupByColumns()
 
 	pushedAgg = LogicalAggregation{
 		AggFuncs:     partial.AggFuncs,
@@ -262,7 +303,6 @@ func (a *aggregationPushDownSolver) splitPartialAgg(agg *LogicalAggregation, par
 		aggHints:     agg.aggHints,
 	}.Init(agg.ctx, agg.blockOffset)
 	pushedAgg.SetSchema(partial.Schema)
-	pushedAgg.collectGroupByColumns()
 	return
 }
 
@@ -289,8 +329,7 @@ func (a *aggregationPushDownSolver) pushAggCrossUnion(agg *LogicalAggregation, u
 		newExpr := expression.ColumnSubstitute(gbyExpr, unionSchema, expression.Column2Exprs(unionChild.Schema().Columns))
 		newAgg.GroupByItems = append(newAgg.GroupByItems, newExpr)
 	}
-	newAgg.collectGroupByColumns()
-	tmpSchema := expression.NewSchema(newAgg.groupByCols...)
+	tmpSchema := expression.NewSchema(newAgg.GetGroupByCols()...)
 	// e.g. Union distinct will add a aggregation like `select join_agg_0, join_agg_1, join_agg_2 from t group by a, b, c` above UnionAll.
 	// And the pushed agg will be something like `select a, b, c, a, b, c from t group by a, b, c`. So if we just return child as join does,
 	// this will cause error during executor phase.
@@ -370,7 +409,6 @@ func (a *aggregationPushDownSolver) aggPushDown(p LogicalPlan) (_ LogicalPlan, e
 				for i, gbyItem := range agg.GroupByItems {
 					agg.GroupByItems[i] = expression.ColumnSubstitute(gbyItem, proj.schema, proj.Exprs)
 				}
-				agg.collectGroupByColumns()
 				for _, aggFunc := range agg.AggFuncs {
 					newArgs := make([]expression.Expression, 0, len(aggFunc.Args))
 					for _, arg := range aggFunc.Args {
@@ -380,7 +418,12 @@ func (a *aggregationPushDownSolver) aggPushDown(p LogicalPlan) (_ LogicalPlan, e
 				}
 				projChild := proj.children[0]
 				agg.SetChildren(projChild)
-			} else if union, ok1 := child.(*LogicalUnionAll); ok1 && p.SCtx().GetSessionVars().AllowAggPushDown {
+				// When the origin plan tree is `Aggregation->Projection->Union All->X`, we need to merge 'Aggregation' and 'Projection' first.
+				// And then push the new 'Aggregation' below the 'Union All' .
+				// The final plan tree should be 'Aggregation->Union All->Aggregation->X'.
+				child = projChild
+			}
+			if union, ok1 := child.(*LogicalUnionAll); ok1 && p.SCtx().GetSessionVars().AllowAggPushDown {
 				err := a.tryAggPushDownForUnion(union, agg)
 				if err != nil {
 					return nil, err

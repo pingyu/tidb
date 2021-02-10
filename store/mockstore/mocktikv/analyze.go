@@ -28,6 +28,7 @@ import (
 	"github.com/pingcap/tidb/types"
 	"github.com/pingcap/tidb/util/chunk"
 	"github.com/pingcap/tidb/util/codec"
+	"github.com/pingcap/tidb/util/collate"
 	"github.com/pingcap/tidb/util/rowcodec"
 	"github.com/pingcap/tipb/go-tipb"
 )
@@ -80,7 +81,7 @@ func (h *rpcHandler) handleAnalyzeIndexReq(req *coprocessor.Request, analyzeReq 
 		execDetail:     new(execDetail),
 		hdStatus:       tablecodec.HandleNotNeeded,
 	}
-	statsBuilder := statistics.NewSortedBuilder(flagsToStatementContext(analyzeReq.Flags), analyzeReq.IdxReq.BucketSize, 0, types.NewFieldType(mysql.TypeBlob))
+	statsBuilder := statistics.NewSortedBuilder(flagsToStatementContext(analyzeReq.Flags), analyzeReq.IdxReq.BucketSize, 0, types.NewFieldType(mysql.TypeBlob), statistics.Version1)
 	var cms *statistics.CMSketch
 	if analyzeReq.IdxReq.CmsketchDepth != nil && analyzeReq.IdxReq.CmsketchWidth != nil {
 		cms = statistics.NewCMSketch(*analyzeReq.IdxReq.CmsketchDepth, *analyzeReq.IdxReq.CmsketchWidth)
@@ -110,7 +111,7 @@ func (h *rpcHandler) handleAnalyzeIndexReq(req *coprocessor.Request, analyzeReq 
 	hg := statistics.HistogramToProto(statsBuilder.Hist())
 	var cm *tipb.CMSketch
 	if cms != nil {
-		cm = statistics.CMSketchToProto(cms)
+		cm = statistics.CMSketchToProto(cms, nil)
 	}
 	data, err := proto.Marshal(&tipb.AnalyzeIndexResp{Hist: hg, Cms: cm})
 	if err != nil {
@@ -187,7 +188,17 @@ func (h *rpcHandler) handleAnalyzeColumnsReq(req *coprocessor.Request, analyzeRe
 	numCols := len(columns)
 	if columns[0].GetPkHandle() {
 		pkID = columns[0].ColumnId
+		columns = columns[1:]
 		numCols--
+	}
+	collators := make([]collate.Collator, numCols)
+	fts := make([]*types.FieldType, numCols)
+	for i, col := range columns {
+		ft := fieldTypeFromPBColumn(col)
+		fts[i] = ft
+		if ft.EvalType() == types.ETString {
+			collators[i] = collate.GetCollator(ft.Collate)
+		}
 	}
 	colReq := analyzeReq.ColReq
 	builder := statistics.SampleBuilder{
@@ -197,9 +208,11 @@ func (h *rpcHandler) handleAnalyzeColumnsReq(req *coprocessor.Request, analyzeRe
 		MaxBucketSize:   colReq.BucketSize,
 		MaxFMSketchSize: colReq.SketchSize,
 		MaxSampleSize:   colReq.SampleSize,
+		Collators:       collators,
+		ColsFieldType:   fts,
 	}
 	if pkID != -1 {
-		builder.PkBuilder = statistics.NewSortedBuilder(sc, builder.MaxBucketSize, pkID, types.NewFieldType(mysql.TypeBlob))
+		builder.PkBuilder = statistics.NewSortedBuilder(sc, builder.MaxBucketSize, pkID, types.NewFieldType(mysql.TypeBlob), statistics.Version1)
 	}
 	if colReq.CmsketchWidth != nil && colReq.CmsketchDepth != nil {
 		builder.CMSketchWidth = *colReq.CmsketchWidth

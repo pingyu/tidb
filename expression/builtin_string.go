@@ -436,9 +436,9 @@ func (b *builtinConcatWSSig) evalString(row chunk.Row) (string, bool, error) {
 
 	str := strings.Join(strs, sep)
 	// todo check whether the length of result is larger than Flen
-	//if b.tp.Flen != types.UnspecifiedLength && len(str) > b.tp.Flen {
+	// if b.tp.Flen != types.UnspecifiedLength && len(str) > b.tp.Flen {
 	//	return "", true, nil
-	//}
+	// }
 	return str, false, nil
 }
 
@@ -2308,8 +2308,29 @@ func (c *charFunctionClass) getFunction(ctx sessionctx.Context, args []Expressio
 	if err != nil {
 		return nil, err
 	}
+	// The last argument represents the charset name after "using".
+	if _, ok := args[len(args)-1].(*Constant); !ok {
+		// If we got there, there must be something wrong in other places.
+		logutil.BgLogger().Warn(fmt.Sprintf("The last argument in char function must be constant, but got %T", args[len(args)-1]))
+		return nil, errIncorrectArgs
+	}
+	charsetName, isNull, err := args[len(args)-1].EvalString(ctx, chunk.Row{})
+	if err != nil {
+		return nil, err
+	}
+	if isNull {
+		// Use the default charset binary if it is nil.
+		bf.tp.Charset, bf.tp.Collate = charset.CharsetBin, charset.CollationBin
+		bf.tp.Flag |= mysql.BinaryFlag
+	} else {
+		bf.tp.Charset = charsetName
+		defaultCollate, err := charset.GetDefaultCollation(charsetName)
+		if err != nil {
+			return nil, err
+		}
+		bf.tp.Collate = defaultCollate
+	}
 	bf.tp.Flen = 4 * (len(args) - 1)
-	types.SetBinChsClnFlag(bf.tp)
 
 	sig := &builtinCharSig{bf}
 	sig.setPbCode(tipb.ScalarFuncSig_Char)
@@ -2354,33 +2375,7 @@ func (b *builtinCharSig) evalString(row chunk.Row) (string, bool, error) {
 		}
 		bigints = append(bigints, val)
 	}
-	// The last argument represents the charset name after "using".
-	// Use default charset utf8 if it is nil.
-	argCharset, IsNull, err := b.args[len(b.args)-1].EvalString(b.ctx, row)
-	if err != nil {
-		return "", true, err
-	}
-
 	result := string(b.convertToBytes(bigints))
-	charsetLabel := strings.ToLower(argCharset)
-	if IsNull || charsetLabel == "ascii" || strings.HasPrefix(charsetLabel, "utf8") {
-		return result, false, nil
-	}
-
-	encoding, charsetName := charset.Lookup(charsetLabel)
-	if encoding == nil {
-		return "", true, errors.Errorf("unknown encoding: %s", argCharset)
-	}
-
-	oldStr := result
-	result, _, err = transform.String(encoding.NewDecoder(), result)
-	if err != nil {
-		logutil.BgLogger().Warn("change charset of string",
-			zap.String("string", oldStr),
-			zap.String("charset", charsetName),
-			zap.Error(err))
-		return "", true, err
-	}
 	return result, false, nil
 }
 
@@ -3375,8 +3370,10 @@ func (b *builtinFormatWithLocaleSig) evalString(row chunk.Row) (string, bool, er
 	}
 	if isNull {
 		b.ctx.GetSessionVars().StmtCtx.AppendWarning(errUnknownLocale.GenWithStackByArgs("NULL"))
-		locale = "en_US"
+	} else if !strings.EqualFold(locale, "en_US") { // TODO: support other locales.
+		b.ctx.GetSessionVars().StmtCtx.AppendWarning(errUnknownLocale.GenWithStackByArgs(locale))
 	}
+	locale = "en_US"
 	formatString, err := mysql.GetLocaleFormatFunction(locale)(x, d)
 	return formatString, false, err
 }
@@ -3554,13 +3551,13 @@ func (b *builtinToBase64Sig) evalString(row chunk.Row) (d string, isNull bool, e
 		return "", true, nil
 	}
 	if b.tp.Flen == -1 || b.tp.Flen > mysql.MaxBlobWidth {
-		return "", true, nil
+		b.tp.Flen = mysql.MaxBlobWidth
 	}
 
-	//encode
+	// encode
 	strBytes := []byte(str)
 	result := base64.StdEncoding.EncodeToString(strBytes)
-	//A newline is added after each 76 characters of encoded output to divide long output into multiple lines.
+	// A newline is added after each 76 characters of encoded output to divide long output into multiple lines.
 	count := len(result)
 	if count > 76 {
 		resultArr := splitToSubN(result, 76)
@@ -3888,7 +3885,12 @@ func (c *weightStringFunctionClass) getFunction(ctx sessionctx.Context, args []E
 	if padding == weightStringPaddingNull {
 		sig = &builtinWeightStringNullSig{bf}
 	} else {
-		sig = &builtinWeightStringSig{bf, padding, length}
+		valStr, _ := ctx.GetSessionVars().GetSystemVar(variable.MaxAllowedPacket)
+		maxAllowedPacket, err := strconv.ParseUint(valStr, 10, 64)
+		if err != nil {
+			return nil, errors.Trace(err)
+		}
+		sig = &builtinWeightStringSig{bf, padding, length, maxAllowedPacket}
 	}
 	return sig, nil
 }
@@ -3912,8 +3914,9 @@ func (b *builtinWeightStringNullSig) evalString(row chunk.Row) (string, bool, er
 type builtinWeightStringSig struct {
 	baseBuiltinFunc
 
-	padding weightStringPadding
-	length  int
+	padding          weightStringPadding
+	length           int
+	maxAllowedPacket uint64
 }
 
 func (b *builtinWeightStringSig) Clone() builtinFunc {
@@ -3921,6 +3924,7 @@ func (b *builtinWeightStringSig) Clone() builtinFunc {
 	newSig.cloneFrom(&b.baseBuiltinFunc)
 	newSig.padding = b.padding
 	newSig.length = b.length
+	newSig.maxAllowedPacket = b.maxAllowedPacket
 	return newSig
 }
 
@@ -3944,6 +3948,10 @@ func (b *builtinWeightStringSig) evalString(row chunk.Row) (string, bool, error)
 		if b.length < lenRunes {
 			str = string(runes[:b.length])
 		} else if b.length > lenRunes {
+			if uint64(b.length-lenRunes) > b.maxAllowedPacket {
+				b.ctx.GetSessionVars().StmtCtx.AppendWarning(errWarnAllowedPacketOverflowed.GenWithStackByArgs("weight_string", b.maxAllowedPacket))
+				return "", true, nil
+			}
 			str += strings.Repeat(" ", b.length-lenRunes)
 		}
 		ctor = collate.GetCollator(b.args[0].GetType().Collate)
@@ -3954,6 +3962,10 @@ func (b *builtinWeightStringSig) evalString(row chunk.Row) (string, bool, error)
 			b.ctx.GetSessionVars().StmtCtx.AppendWarning(errTruncatedWrongValue.GenWithStackByArgs(tpInfo, str))
 			str = str[:b.length]
 		} else if b.length > lenStr {
+			if uint64(b.length-lenStr) > b.maxAllowedPacket {
+				b.ctx.GetSessionVars().StmtCtx.AppendWarning(errWarnAllowedPacketOverflowed.GenWithStackByArgs("cast_as_binary", b.maxAllowedPacket))
+				return "", true, nil
+			}
 			str += strings.Repeat("\x00", b.length-lenStr)
 		}
 		ctor = collate.GetCollator(charset.CollationBin)

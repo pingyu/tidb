@@ -22,7 +22,6 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/pingcap/errors"
 	"github.com/pingcap/parser/ast"
 	"github.com/pingcap/parser/charset"
 	"github.com/pingcap/parser/mysql"
@@ -30,8 +29,6 @@ import (
 	"github.com/pingcap/tidb/types"
 	"github.com/pingcap/tidb/util/chunk"
 	"github.com/pingcap/tidb/util/collate"
-	"github.com/pingcap/tidb/util/logutil"
-	"go.uber.org/zap"
 	"golang.org/x/text/transform"
 )
 
@@ -649,10 +646,10 @@ func (b *builtinConcatWSSig) vecEvalString(input *chunk.Chunk, result *chunk.Col
 		}
 		str := strings.Join(strs[i], seps[i])
 		// todo check whether the length of result is larger than Flen
-		//if b.tp.Flen != types.UnspecifiedLength && len(str) > b.tp.Flen {
+		// if b.tp.Flen != types.UnspecifiedLength && len(str) > b.tp.Flen {
 		//	result.AppendNull()
 		//	continue
-		//}
+		// }
 		result.AppendString(str)
 	}
 	return nil
@@ -2241,9 +2238,6 @@ func (b *builtinCharSig) vecEvalString(input *chunk.Chunk, result *chunk.Column)
 		return err
 	}
 	defer b.bufAllocator.put(bufstr)
-	if err := b.args[l-1].VecEvalString(b.ctx, input, bufstr); err != nil {
-		return err
-	}
 	bigints := make([]int64, 0, l-1)
 	result.ReserveString(n)
 	bufint := make([]([]int64), l-1)
@@ -2259,25 +2253,7 @@ func (b *builtinCharSig) vecEvalString(input *chunk.Chunk, result *chunk.Column)
 			bigints = append(bigints, bufint[j][i])
 		}
 		tempString := string(b.convertToBytes(bigints))
-		charsetLable := strings.ToLower(bufstr.GetString(i))
-		if bufstr.IsNull(i) || charsetLable == "ascii" || strings.HasPrefix(charsetLable, "utf8") {
-			result.AppendString(tempString)
-		} else {
-			encoding, charsetName := charset.Lookup(charsetLable)
-			if encoding == nil {
-				return errors.Errorf("unknown encoding: %s", bufstr.GetString(i))
-			}
-			oldStr := tempString
-			tempString, _, err := transform.String(encoding.NewDecoder(), tempString)
-			if err != nil {
-				logutil.BgLogger().Warn("change charset of string",
-					zap.String("string", oldStr),
-					zap.String("charset", charsetName),
-					zap.Error(err))
-				return err
-			}
-			result.AppendString(tempString)
-		}
+		result.AppendString(tempString)
 	}
 	return nil
 }
@@ -2444,12 +2420,11 @@ func (b *builtinToBase64Sig) vecEvalString(input *chunk.Chunk, result *chunk.Col
 			result.AppendNull()
 			continue
 		} else if b.tp.Flen == -1 || b.tp.Flen > mysql.MaxBlobWidth {
-			result.AppendNull()
-			continue
+			b.tp.Flen = mysql.MaxBlobWidth
 		}
 
 		newStr := base64.StdEncoding.EncodeToString([]byte(str))
-		//A newline is added after each 76 characters of encoded output to divide long output into multiple lines.
+		// A newline is added after each 76 characters of encoded output to divide long output into multiple lines.
 		count := len(newStr)
 		if count > 76 {
 			newStr = strings.Join(splitToSubN(newStr, 76), "\n")
@@ -2889,16 +2864,15 @@ func formatDecimal(sctx sessionctx.Context, xBuf *chunk.Column, dInt64s []int64,
 			d = formatMaxDecimals
 		}
 
-		var locale string
+		locale := "en_US"
 		if localeBuf == nil {
 			// FORMAT(x, d)
-			locale = "en_US"
 		} else if localeBuf.IsNull(i) {
 			// FORMAT(x, d, NULL)
 			sctx.GetSessionVars().StmtCtx.AppendWarning(errUnknownLocale.GenWithStackByArgs("NULL"))
-			locale = "en_US"
-		} else {
-			locale = localeBuf.GetString(i)
+		} else if !strings.EqualFold(localeBuf.GetString(i), "en_US") {
+			// TODO: support other locales.
+			sctx.GetSessionVars().StmtCtx.AppendWarning(errUnknownLocale.GenWithStackByArgs(localeBuf.GetString(i)))
 		}
 
 		xStr := roundFormatArgs(x.String(), int(d))
@@ -2930,16 +2904,15 @@ func formatReal(sctx sessionctx.Context, xBuf *chunk.Column, dInt64s []int64, re
 			d = formatMaxDecimals
 		}
 
-		var locale string
+		locale := "en_US"
 		if localeBuf == nil {
 			// FORMAT(x, d)
-			locale = "en_US"
 		} else if localeBuf.IsNull(i) {
 			// FORMAT(x, d, NULL)
 			sctx.GetSessionVars().StmtCtx.AppendWarning(errUnknownLocale.GenWithStackByArgs("NULL"))
-			locale = "en_US"
-		} else {
-			locale = localeBuf.GetString(i)
+		} else if !strings.EqualFold(localeBuf.GetString(i), "en_US") {
+			// TODO: support other locales.
+			sctx.GetSessionVars().StmtCtx.AppendWarning(errUnknownLocale.GenWithStackByArgs(localeBuf.GetString(i)))
 		}
 
 		xStr := roundFormatArgs(strconv.FormatFloat(x, 'f', -1, 64), int(d))

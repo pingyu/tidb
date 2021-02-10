@@ -52,6 +52,10 @@ const (
 	TypeLimit = "Limit"
 	// TypeHashJoin is the type of hash join.
 	TypeHashJoin = "HashJoin"
+	// TypeExchangeSender is the type of mpp exchanger sender.
+	TypeExchangeSender = "ExchangeSender"
+	// TypeExchangeReceiver is the type of mpp exchanger receiver.
+	TypeExchangeReceiver = "ExchangeReceiver"
 	// TypeMergeJoin is the type of merge join.
 	TypeMergeJoin = "MergeJoin"
 	// TypeIndexJoin is the type of index look up join.
@@ -86,8 +90,8 @@ const (
 	TypeWindow = "Window"
 	// TypeShuffle is the type of Shuffle.
 	TypeShuffle = "Shuffle"
-	// TypeShuffleDataSourceStub is the type of Shuffle.
-	TypeShuffleDataSourceStub = "ShuffleDataSourceStub"
+	// TypeShuffleReceiver is the type of Shuffle.
+	TypeShuffleReceiver = "ShuffleReceiver"
 	// TypeTiKVSingleGather is the type of TiKVSingleGather.
 	TypeTiKVSingleGather = "TiKVSingleGather"
 	// TypeIndexMerge is the type of IndexMergeReader
@@ -102,51 +106,72 @@ const (
 	TypeClusterMemTableReader = "ClusterMemTableReader"
 	// TypeDataSource is the type of DataSource.
 	TypeDataSource = "DataSource"
+	// TypeLoadData is the type of LoadData.
+	TypeLoadData = "LoadData"
+	// TypeTableSample is the type of TableSample.
+	TypeTableSample = "TableSample"
+	// TypeTableFullScan is the type of TableFullScan.
+	TypeTableFullScan = "TableFullScan"
+	// TypeTableRangeScan is the type of TableRangeScan.
+	TypeTableRangeScan = "TableRangeScan"
+	// TypeTableRowIDScan is the type of TableRowIDScan.
+	TypeTableRowIDScan = "TableRowIDScan"
+	// TypeIndexFullScan is the type of IndexFullScan.
+	TypeIndexFullScan = "IndexFullScan"
+	// TypeIndexRangeScan is the type of IndexRangeScan.
+	TypeIndexRangeScan = "IndexRangeScan"
 )
 
 // plan id.
 // Attention: for compatibility of encode/decode plan, The plan id shouldn't be changed.
 const (
 	typeSelID                 int = 1
-	typeSetID                     = 2
-	typeProjID                    = 3
-	typeAggID                     = 4
-	typeStreamAggID               = 5
-	typeHashAggID                 = 6
-	typeShowID                    = 7
-	typeJoinID                    = 8
-	typeUnionID                   = 9
-	typeTableScanID               = 10
-	typeMemTableScanID            = 11
-	typeUnionScanID               = 12
-	typeIdxScanID                 = 13
-	typeSortID                    = 14
-	typeTopNID                    = 15
-	typeLimitID                   = 16
-	typeHashJoinID                = 17
-	typeMergeJoinID               = 18
-	typeIndexJoinID               = 19
-	typeIndexMergeJoinID          = 20
-	typeIndexHashJoinID           = 21
-	typeApplyID                   = 22
-	typeMaxOneRowID               = 23
-	typeExistsID                  = 24
-	typeDualID                    = 25
-	typeLockID                    = 26
-	typeInsertID                  = 27
-	typeUpdateID                  = 28
-	typeDeleteID                  = 29
-	typeIndexLookUpID             = 30
-	typeTableReaderID             = 31
-	typeIndexReaderID             = 32
-	typeWindowID                  = 33
-	typeTiKVSingleGatherID        = 34
-	typeIndexMergeID              = 35
-	typePointGet                  = 36
-	typeShowDDLJobs               = 37
-	typeBatchPointGet             = 38
-	typeClusterMemTableReader     = 39
-	typeDataSourceID              = 40
+	typeSetID                 int = 2
+	typeProjID                int = 3
+	typeAggID                 int = 4
+	typeStreamAggID           int = 5
+	typeHashAggID             int = 6
+	typeShowID                int = 7
+	typeJoinID                int = 8
+	typeUnionID               int = 9
+	typeTableScanID           int = 10
+	typeMemTableScanID        int = 11
+	typeUnionScanID           int = 12
+	typeIdxScanID             int = 13
+	typeSortID                int = 14
+	typeTopNID                int = 15
+	typeLimitID               int = 16
+	typeHashJoinID            int = 17
+	typeMergeJoinID           int = 18
+	typeIndexJoinID           int = 19
+	typeIndexMergeJoinID      int = 20
+	typeIndexHashJoinID       int = 21
+	typeApplyID               int = 22
+	typeMaxOneRowID           int = 23
+	typeExistsID              int = 24
+	typeDualID                int = 25
+	typeLockID                int = 26
+	typeInsertID              int = 27
+	typeUpdateID              int = 28
+	typeDeleteID              int = 29
+	typeIndexLookUpID         int = 30
+	typeTableReaderID         int = 31
+	typeIndexReaderID         int = 32
+	typeWindowID              int = 33
+	typeTiKVSingleGatherID    int = 34
+	typeIndexMergeID          int = 35
+	typePointGet              int = 36
+	typeShowDDLJobs           int = 37
+	typeBatchPointGet         int = 38
+	typeClusterMemTableReader int = 39
+	typeDataSourceID          int = 40
+	typeLoadDataID            int = 41
+	typeTableSampleID         int = 42
+	typeTableFullScan         int = 43
+	typeTableRangeScan        int = 44
+	typeTableRowIDScan        int = 45
+	typeIndexFullScan         int = 46
+	typeIndexRangeScan        int = 47
 )
 
 // TypeStringToPhysicalID converts the plan type string to plan id.
@@ -232,6 +257,20 @@ func TypeStringToPhysicalID(tp string) int {
 		return typeClusterMemTableReader
 	case TypeDataSource:
 		return typeDataSourceID
+	case TypeLoadData:
+		return typeLoadDataID
+	case TypeTableSample:
+		return typeTableSampleID
+	case TypeTableFullScan:
+		return typeTableFullScan
+	case TypeTableRangeScan:
+		return typeTableRangeScan
+	case TypeTableRowIDScan:
+		return typeTableRowIDScan
+	case TypeIndexFullScan:
+		return typeIndexFullScan
+	case TypeIndexRangeScan:
+		return typeIndexRangeScan
 	}
 	// Should never reach here.
 	return 0
@@ -318,6 +357,18 @@ func PhysicalIDToTypeString(id int) string {
 		return TypeBatchPointGet
 	case typeClusterMemTableReader:
 		return TypeClusterMemTableReader
+	case typeLoadDataID:
+		return TypeLoadData
+	case typeTableFullScan:
+		return TypeTableFullScan
+	case typeTableRangeScan:
+		return TypeTableRangeScan
+	case typeTableRowIDScan:
+		return TypeTableRowIDScan
+	case typeIndexFullScan:
+		return TypeIndexFullScan
+	case typeIndexRangeScan:
+		return TypeIndexRangeScan
 	}
 
 	// Should never reach here.

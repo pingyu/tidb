@@ -28,17 +28,21 @@ import (
 
 // NewOne stands for a number 1.
 func NewOne() *Constant {
+	retT := types.NewFieldType(mysql.TypeTiny)
+	retT.Flag |= mysql.UnsignedFlag // shrink range to avoid integral promotion
 	return &Constant{
 		Value:   types.NewDatum(1),
-		RetType: types.NewFieldType(mysql.TypeTiny),
+		RetType: retT,
 	}
 }
 
 // NewZero stands for a number 0.
 func NewZero() *Constant {
+	retT := types.NewFieldType(mysql.TypeTiny)
+	retT.Flag |= mysql.UnsignedFlag // shrink range to avoid integral promotion
 	return &Constant{
 		Value:   types.NewDatum(0),
-		RetType: types.NewFieldType(mysql.TypeTiny),
+		RetType: retT,
 	}
 }
 
@@ -91,7 +95,7 @@ func (c *Constant) String() string {
 
 // MarshalJSON implements json.Marshaler interface.
 func (c *Constant) MarshalJSON() ([]byte, error) {
-	return []byte(fmt.Sprintf("\"%s\"", c)), nil
+	return []byte(fmt.Sprintf("%q", c)), nil
 }
 
 // Clone implements Expression interface.
@@ -102,11 +106,11 @@ func (c *Constant) Clone() Expression {
 
 // GetType implements Expression interface.
 func (c *Constant) GetType() *types.FieldType {
-	if p := c.ParamMarker; p != nil && !p.ctx.GetSessionVars().StmtCtx.InExplainStmt {
+	if c.ParamMarker != nil {
 		// GetType() may be called in multi-threaded context, e.g, in building inner executors of IndexJoin,
 		// so it should avoid data race. We achieve this by returning different FieldType pointer for each call.
 		tp := types.NewFieldType(mysql.TypeUnspecified)
-		dt := p.GetUserVar()
+		dt := c.ParamMarker.GetUserVar()
 		types.DefaultParamTypeForValue(dt.GetValue(), tp)
 		return tp
 	}
@@ -170,21 +174,13 @@ func (c *Constant) VecEvalJSON(ctx sessionctx.Context, input *chunk.Chunk, resul
 }
 
 func (c *Constant) getLazyDatum(row chunk.Row) (dt types.Datum, isLazy bool, err error) {
-	if p := c.ParamMarker; p != nil {
-		if p.ctx.GetSessionVars().StmtCtx.InExplainStmt {
-			// Since `ParamMarker` is not nil only in prepare/execute context, the query must be `explain for connection` when coming here.
-			// The PreparedParams may have been reset already, to avoid panic, we just use the pre-evaluated datum for this constant.
-			return dt, false, nil
-		}
-		dt = p.GetUserVar()
-		isLazy = true
-		return
+	if c.ParamMarker != nil {
+		return c.ParamMarker.GetUserVar(), true, nil
 	} else if c.DeferredExpr != nil {
 		dt, err = c.DeferredExpr.Eval(row)
-		isLazy = true
-		return
+		return dt, true, err
 	}
-	return
+	return types.Datum{}, false, nil
 }
 
 // Eval implements Expression interface.

@@ -76,6 +76,9 @@ func (h *CoprocessorDAGHandler) HandleRequest(ctx context.Context, req *coproces
 		}
 		totalChunks = append(totalChunks, partChunks...)
 	}
+	if err := e.Close(); err != nil {
+		return h.buildErrorResponse(err)
+	}
 	return h.buildUnaryResponse(totalChunks)
 }
 
@@ -158,11 +161,12 @@ func (h *CoprocessorDAGHandler) buildDAGExecutor(req *coprocessor.Request) (Exec
 	h.dagReq = dagReq
 	is := h.sctx.GetSessionVars().TxnCtx.InfoSchema.(infoschema.InfoSchema)
 	// Build physical plan.
-	bp := core.NewPBPlanBuilder(h.sctx, is)
+	bp := core.NewPBPlanBuilder(h.sctx, is, req.Ranges)
 	plan, err := bp.Build(dagReq.Executors)
 	if err != nil {
 		return nil, errors.Trace(err)
 	}
+	plan = core.InjectExtraProjection(plan)
 	// Build executor.
 	b := newExecutorBuilder(h.sctx, is)
 	return b.build(plan), nil
@@ -184,6 +188,14 @@ func (h *CoprocessorDAGHandler) buildUnaryResponse(chunks []tipb.Chunk) *coproce
 	selResp := tipb.SelectResponse{
 		Chunks:     chunks,
 		EncodeType: h.dagReq.EncodeType,
+	}
+	if h.dagReq.CollectExecutionSummaries != nil && *h.dagReq.CollectExecutionSummaries {
+		execSummary := make([]*tipb.ExecutorExecutionSummary, len(h.dagReq.Executors))
+		for i := range execSummary {
+			// TODO: Add real executor execution summary information.
+			execSummary[i] = &tipb.ExecutorExecutionSummary{}
+		}
+		selResp.ExecutionSummaries = execSummary
 	}
 	data, err := proto.Marshal(&selResp)
 	if err != nil {

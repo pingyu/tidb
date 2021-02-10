@@ -16,6 +16,7 @@ package executor
 import (
 	"context"
 
+	"github.com/pingcap/parser/model"
 	"github.com/pingcap/tidb/config"
 	"github.com/pingcap/tidb/kv"
 	plannercore "github.com/pingcap/tidb/planner/core"
@@ -49,22 +50,16 @@ func (e *DeleteExec) Next(ctx context.Context, req *chunk.Chunk) error {
 	return e.deleteSingleTableByChunk(ctx)
 }
 
-func (e *DeleteExec) deleteOneRow(tbl table.Table, handleIndex []int, isExtraHandle bool, row []types.Datum) error {
+func (e *DeleteExec) deleteOneRow(tbl table.Table, handleCols plannercore.HandleCols, isExtraHandle bool, row []types.Datum) error {
 	end := len(row)
 	if isExtraHandle {
 		end--
 	}
-	var handle kv.Handle
-	if !tbl.Meta().IsCommonHandle {
-		handle = kv.IntHandle(row[handleIndex[0]].GetInt64())
-	} else {
-		var err error
-		handle, err = kv.BuildHandleFromDatumRow(e.ctx.GetSessionVars().StmtCtx, row, handleIndex)
-		if err != nil {
-			return err
-		}
+	handle, err := handleCols.BuildHandleByDatums(row)
+	if err != nil {
+		return err
 	}
-	err := e.removeRow(e.ctx, tbl, handle, row[:end])
+	err = e.removeRow(e.ctx, tbl, handle, row[:end])
 	if err != nil {
 		return err
 	}
@@ -75,22 +70,21 @@ func (e *DeleteExec) deleteSingleTableByChunk(ctx context.Context) error {
 	var (
 		tbl           table.Table
 		isExtrahandle bool
-		handleIndex   []int
+		handleCols    plannercore.HandleCols
 		rowCount      int
 	)
 	for _, info := range e.tblColPosInfos {
 		tbl = e.tblID2Table[info.TblID]
+		handleCols = info.HandleCols
 		if !tbl.Meta().IsCommonHandle {
-			handleIndex = []int{info.HandleOrdinal[0]}
-			isExtrahandle = handleIsExtra(e.children[0].Schema().Columns[info.HandleOrdinal[0]])
-		} else {
-			handleIndex = info.HandleOrdinal
+			isExtrahandle = handleCols.IsInt() && handleCols.GetCol(0).ID == model.ExtraHandleID
 		}
 	}
 
-	// If tidb_batch_delete is ON and not in a transaction, we could use BatchDelete mode.
-	batchDelete := e.ctx.GetSessionVars().BatchDelete && !e.ctx.GetSessionVars().InTxn() && config.GetGlobalConfig().EnableBatchDML
 	batchDMLSize := e.ctx.GetSessionVars().DMLBatchSize
+	// If tidb_batch_delete is ON and not in a transaction, we could use BatchDelete mode.
+	batchDelete := e.ctx.GetSessionVars().BatchDelete && !e.ctx.GetSessionVars().InTxn() &&
+		config.GetGlobalConfig().EnableBatchDML && batchDMLSize > 0
 	fields := retTypes(e.children[0])
 	chk := newFirstChunk(e.children[0])
 	memUsageOfChk := int64(0)
@@ -108,18 +102,14 @@ func (e *DeleteExec) deleteSingleTableByChunk(ctx context.Context) error {
 		e.memTracker.Consume(memUsageOfChk)
 		for chunkRow := iter.Begin(); chunkRow != iter.End(); chunkRow = iter.Next() {
 			if batchDelete && rowCount >= batchDMLSize {
-				if err = e.ctx.StmtCommit(e.memTracker); err != nil {
+				if err := e.doBatchDelete(ctx); err != nil {
 					return err
-				}
-				if err = e.ctx.NewTxn(ctx); err != nil {
-					// We should return a special error for batch insert.
-					return ErrBatchInsertFail.GenWithStack("BatchDelete failed with error: %v", err)
 				}
 				rowCount = 0
 			}
 
 			datumRow := chunkRow.GetDatumRow(fields)
-			err = e.deleteOneRow(tbl, handleIndex, isExtrahandle, datumRow)
+			err = e.deleteOneRow(tbl, handleCols, isExtrahandle, datumRow)
 			if err != nil {
 				return err
 			}
@@ -131,21 +121,29 @@ func (e *DeleteExec) deleteSingleTableByChunk(ctx context.Context) error {
 	return nil
 }
 
+func (e *DeleteExec) doBatchDelete(ctx context.Context) error {
+	txn, err := e.ctx.Txn(false)
+	if err != nil {
+		return ErrBatchInsertFail.GenWithStack("BatchDelete failed with error: %v", err)
+	}
+	e.memTracker.Consume(-int64(txn.Size()))
+	e.ctx.StmtCommit()
+	if err := e.ctx.NewTxn(ctx); err != nil {
+		// We should return a special error for batch insert.
+		return ErrBatchInsertFail.GenWithStack("BatchDelete failed with error: %v", err)
+	}
+	return nil
+}
+
 func (e *DeleteExec) composeTblRowMap(tblRowMap tableRowMapType, colPosInfos []plannercore.TblColPosInfo, joinedRow []types.Datum) error {
 	// iterate all the joined tables, and got the copresonding rows in joinedRow.
 	for _, info := range colPosInfos {
 		if tblRowMap[info.TblID] == nil {
 			tblRowMap[info.TblID] = kv.NewHandleMap()
 		}
-		var handle kv.Handle
-		if !info.IsCommonHandle {
-			handle = kv.IntHandle(joinedRow[info.HandleOrdinal[0]].GetInt64())
-		} else {
-			var err error
-			handle, err = kv.BuildHandleFromDatumRow(e.ctx.GetSessionVars().StmtCtx, joinedRow, info.HandleOrdinal)
-			if err != nil {
-				return err
-			}
+		handle, err := info.HandleCols.BuildHandleByDatums(joinedRow)
+		if err != nil {
+			return err
 		}
 		// tblRowMap[info.TblID][handle] hold the row datas binding to this table and this handle.
 		tblRowMap[info.TblID].Set(handle, joinedRow[info.Start:info.End])

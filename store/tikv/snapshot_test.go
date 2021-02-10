@@ -24,13 +24,14 @@ import (
 	"github.com/pingcap/failpoint"
 	pb "github.com/pingcap/kvproto/pkg/kvrpcpb"
 	"github.com/pingcap/tidb/kv"
-	"github.com/pingcap/tidb/util/logutil"
+	"github.com/pingcap/tidb/store/tikv/logutil"
+	"github.com/pingcap/tidb/store/tikv/tikvrpc"
 	"go.uber.org/zap"
 )
 
 type testSnapshotSuite struct {
 	OneByOneSuite
-	store   *tikvStore
+	store   *KVStore
 	prefix  string
 	rowNums []int
 }
@@ -39,7 +40,7 @@ var _ = Suite(&testSnapshotSuite{})
 
 func (s *testSnapshotSuite) SetUpSuite(c *C) {
 	s.OneByOneSuite.SetUpSuite(c)
-	s.store = NewTestStore(c).(*tikvStore)
+	s.store = NewTestStore(c)
 	s.prefix = fmt.Sprintf("snapshot_%d", time.Now().Unix())
 	s.rowNums = append(s.rowNums, 1, 100, 191)
 }
@@ -218,7 +219,7 @@ func (s *testSnapshotSuite) TestSkipLargeTxnLock(c *C) {
 	c.Assert(txn.Set(x, []byte("x")), IsNil)
 	c.Assert(txn.Set(y, []byte("y")), IsNil)
 	ctx := context.Background()
-	bo := NewBackoffer(ctx, PrewriteMaxBackoff)
+	bo := NewBackofferWithVars(ctx, PrewriteMaxBackoff, nil)
 	committer, err := newTwoPhaseCommitterWithInit(txn, 0)
 	c.Assert(err, IsNil)
 	committer.lockTTL = 3000
@@ -249,7 +250,7 @@ func (s *testSnapshotSuite) TestPointGetSkipTxnLock(c *C) {
 	c.Assert(txn.Set(x, []byte("x")), IsNil)
 	c.Assert(txn.Set(y, []byte("y")), IsNil)
 	ctx := context.Background()
-	bo := NewBackoffer(ctx, PrewriteMaxBackoff)
+	bo := NewBackofferWithVars(ctx, PrewriteMaxBackoff, nil)
 	committer, err := newTwoPhaseCommitterWithInit(txn, 0)
 	c.Assert(err, IsNil)
 	committer.lockTTL = 3000
@@ -299,4 +300,54 @@ func (s *testSnapshotSuite) TestSnapshotThreadSafe(c *C) {
 		}()
 	}
 	wg.Wait()
+}
+
+func (s *testSnapshotSuite) TestSnapshotRuntimeStats(c *C) {
+	reqStats := NewRegionRequestRuntimeStats()
+	RecordRegionRequestRuntimeStats(reqStats.Stats, tikvrpc.CmdGet, time.Second)
+	RecordRegionRequestRuntimeStats(reqStats.Stats, tikvrpc.CmdGet, time.Millisecond)
+	snapshot := newTiKVSnapshot(s.store, kv.Version{Ver: 0}, 0)
+	snapshot.SetOption(kv.CollectRuntimeStats, &SnapshotRuntimeStats{})
+	snapshot.mergeRegionRequestStats(reqStats.Stats)
+	snapshot.mergeRegionRequestStats(reqStats.Stats)
+	bo := NewBackofferWithVars(context.Background(), 2000, nil)
+	err := bo.BackoffWithMaxSleep(BoTxnLockFast, 30, errors.New("test"))
+	c.Assert(err, IsNil)
+	snapshot.recordBackoffInfo(bo)
+	snapshot.recordBackoffInfo(bo)
+	expect := "Get:{num_rpc:4, total_time:2s},txnLockFast_backoff:{num:2, total_time:60ms}"
+	c.Assert(snapshot.mu.stats.String(), Equals, expect)
+	detail := &pb.ExecDetailsV2{
+		TimeDetail: &pb.TimeDetail{
+			WaitWallTimeMs:    100,
+			ProcessWallTimeMs: 100,
+		},
+		ScanDetailV2: &pb.ScanDetailV2{
+			ProcessedVersions:         10,
+			TotalVersions:             15,
+			RocksdbBlockReadCount:     20,
+			RocksdbBlockReadByte:      15,
+			RocksdbDeleteSkippedCount: 5,
+			RocksdbKeySkippedCount:    1,
+			RocksdbBlockCacheHitCount: 10,
+		},
+	}
+	snapshot.mergeExecDetail(detail)
+	expect = "Get:{num_rpc:4, total_time:2s},txnLockFast_backoff:{num:2, total_time:60ms}, " +
+		"total_process_time: 100ms, total_wait_time: 100ms, " +
+		"scan_detail: {total_process_keys: 10, " +
+		"total_keys: 15, " +
+		"rocksdb: {delete_skipped_count: 5, " +
+		"key_skipped_count: 1, " +
+		"block: {cache_hit_count: 10, read_count: 20, read_byte: 15 Bytes}}}"
+	c.Assert(snapshot.mu.stats.String(), Equals, expect)
+	snapshot.mergeExecDetail(detail)
+	expect = "Get:{num_rpc:4, total_time:2s},txnLockFast_backoff:{num:2, total_time:60ms}, " +
+		"total_process_time: 200ms, total_wait_time: 200ms, " +
+		"scan_detail: {total_process_keys: 20, " +
+		"total_keys: 30, " +
+		"rocksdb: {delete_skipped_count: 10, " +
+		"key_skipped_count: 2, " +
+		"block: {cache_hit_count: 20, read_count: 40, read_byte: 30 Bytes}}}"
+	c.Assert(snapshot.mu.stats.String(), Equals, expect)
 }
