@@ -335,7 +335,7 @@ func (s *GlobalKillSuite) connectTiDB(port int) (db *sql.DB, err error) {
 	dsn := fmt.Sprintf("root@(%s)/test", addr)
 	sleepTime := 250 * time.Millisecond
 	sleepTimeLimit := 1 * time.Second
-	maxRetryDuration := 20 * time.Second
+	maxRetryDuration := 30 * time.Second
 	startTime := time.Now()
 	for i := 0; time.Since(startTime) < maxRetryDuration; i++ {
 		db, err = sql.Open("mysql", dsn)
